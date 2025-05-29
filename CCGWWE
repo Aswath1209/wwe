@@ -12,7 +12,7 @@ logging.basicConfig(
 )
 
 # Put your bot token here
-BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+BOT_TOKEN = "7821453313:AAHKskxl8WLbRKTFYccvH3SPSVDeVoEzo6U"
 
 active_matches = {}  # chat_id -> match data
 user_to_match_chat = {}  # user_id -> chat_id of their active match
