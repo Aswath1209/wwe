@@ -1,160 +1,188 @@
+# CCGWWE.py — PART 1
+
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup
+)
+from telegram.ext import (
+    ApplicationBuilder, CommandHandler,
+    CallbackQueryHandler, ContextTypes
+)
 import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# 🔐 Your ot Token
-BOT_TOKEN = "8198938492:AAFE0CxaXVeB8cpyphp7pSV98oiOKlf5Jwo"
+# Store active fight data
+fights = {}
 
-match_data = {
-    "players": [],
-    "hp": {},
-    "turn": 0,
-    "special_used": {},
-    "focus_used": {},
-    "status": {}
+# Move definitions
+MOVES = {
+    "RKO": {"type": "attack", "power": 30},
+    "Spear": {"type": "attack", "power": 25},
+    "Superman Punch": {"type": "attack", "power": 20},
+    "Block": {"type": "defend", "power": 15},
+    "Heal": {"type": "heal", "power": 20},
 }
 
-# 🎮 Fight buttons
+# Show health bar
+def health_bar(hp):
+    filled = "🟩" * (hp // 10)
+    empty = "⬛" * (10 - (hp // 10))
+    return filled + empty
+
+# Create move buttons
 def move_buttons():
-    keyboard = [
-        [InlineKeyboardButton("🥊 Attack", callback_data="attack"),
-         InlineKeyboardButton("🛡️ Block", callback_data="block")],
-        [InlineKeyboardButton("🔄 Counter", callback_data="counter"),
-         InlineKeyboardButton("🧠 Focus", callback_data="focus")],
-        [InlineKeyboardButton("💥 Special", callback_data="special"),
-         InlineKeyboardButton("🔥 Finisher", callback_data="finisher")]
-    ]
-    return InlineKeyboardMarkup(keyboard)
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("RKO", callback_data="RKO"),
+         InlineKeyboardButton("Spear", callback_data="Spear"),
+         InlineKeyboardButton("Superman Punch", callback_data="Superman Punch")],
+        [InlineKeyboardButton("Block", callback_data="Block"),
+         InlineKeyboardButton("Heal", callback_data="Heal")]
+    ])
 
-# 🔁 Reset match
-def reset():
-    match_data.update({
-        "players": [],
-        "hp": {},
-        "turn": 0,
-        "special_used": {},
-        "focus_used": {},
-        "status": {}
-    })
-
-# 🟢 /start
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤼 Welcome to Strategic WWE Bot!\nType /fight to challenge someone.")
+    await update.message.reply_text(
+        "👊 Welcome to Telegram Wrestling!\n"
+        "Use /fight to start a match.\n"
+        "Moves: RKO, Spear, Superman Punch, Block, Heal."
+    )
 
-# ⚔️ /fight
+# Fight command
 async def fight(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user.username
-    if user in match_data["players"]:
-        await update.message.reply_text("⚠️ You're already in the match.")
-        return
-    if len(match_data["players"]) < 2:
-        match_data["players"].append(user)
-        if len(match_data["players"]) == 1:
-            await update.message.reply_text(f"👑 {user} is waiting for an opponent...")
-        else:
-            for p in match_data["players"]:
-                match_data["hp"][p] = 100
-                match_data["special_used"][p] = False
-                match_data["focus_used"][p] = False
-                match_data["status"][p] = {"block": False, "focus": False, "counter": False}
-            await update.message.reply_text(
-                f"🔥 Match: {match_data['players'][0]} vs {match_data['players'][1]}!\n"
-                f"{match_data['players'][0]} goes first!"
-            )
-            await send_turn(update, context)
-    else:
-        await update.message.reply_text("⚔️ Match already in progress.")
+    user = update.effective_user
+    chat_id = update.effective_chat.id
 
-# 📤 Send move options
-async def send_turn(update, context):
-    player = match_data["players"][match_data["turn"]]
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=f"🎯 {player}, choose your move:",
+    if chat_id in fights:
+        await update.message.reply_text("⚠️ A fight is already in progress.")
+        return
+
+    fights[chat_id] = {
+        "players": {user.id: {"name": user.first_name, "hp": 100, "move": None}},
+        "state": "waiting"
+    }
+    await update.message.reply_text(
+        f"👤 {user.first_name} started a fight!\n"
+        "Another player, type /join to enter."
+    )
+
+# Join command
+async def join(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    chat_id = update.effective_chat.id
+
+    if chat_id not in fights or fights[chat_id]["state"] != "waiting":
+        await update.message.reply_text("⚠️ No match available to join.")
+        return
+
+    if user.id in fights[chat_id]["players"]:
+        await update.message.reply_text("You're already in this fight.")
+        return
+
+    fights[chat_id]["players"][user.id] = {
+        "name": user.first_name, "hp": 100, "move": None
+    }
+    fights[chat_id]["state"] = "playing"
+
+    p1, p2 = fights[chat_id]["players"].values()
+    await update.message.reply_text(
+        f"🔥 Match started!\n\n"
+        f"{p1['name']} 🆚 {p2['name']}\n\n"
+        f"{p1['name']} HP: {health_bar(p1['hp'])}\n"
+        f"{p2['name']} HP: {health_bar(p2['hp'])}\n\n"
+        "Choose your move:",
         reply_markup=move_buttons()
     )
 
-# 🎯 Handle move
+# Move handler
 async def handle_move(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    player = query.from_user.username
-    if player != match_data["players"][match_data["turn"]]:
-        await query.answer("⏳ Not your turn.")
-        return
-
-    opponent = match_data["players"][1 - match_data["turn"]]
+    await query.answer()
+    user = query.from_user
+    chat_id = query.message.chat_id
     move = query.data
-    msg = ""
 
-    # Finisher check
-    if move == "finisher":
-        if match_data["hp"][opponent] > 30:
-            await query.answer("❌ Opponent HP too high!")
-            return
-        dmg = random.randint(35, 50)
-        match_data["hp"][opponent] -= dmg
-        msg += f"🔥 {player} uses FINISHER!\n{opponent} takes {dmg} damage!\n"
-
-    elif move == "special":
-        if match_data["special_used"][player]:
-            await query.answer("❌ Special already used!")
-            return
-        dmg = random.randint(20, 30)
-        match_data["hp"][opponent] -= dmg
-        match_data["special_used"][player] = True
-        match_data["status"][opponent]["block"] = False
-        msg += f"💥 {player} hits a SPECIAL! {opponent} takes {dmg}!\nBlock disabled!"
-
-    elif move == "attack":
-        dmg = random.randint(10, 20)
-        if match_data["status"][opponent]["block"]:
-            dmg = dmg // 2
-            msg += f"🛡️ {opponent} blocked! Damage reduced.\n"
-        if match_data["status"][player]["focus"]:
-            dmg += 5
-            msg += f"🧠 Focus boost! +5 damage.\n"
-        match_data["hp"][opponent] -= dmg
-        msg += f"🥊 {player} attacks {opponent} for {dmg} HP!"
-
-    elif move == "block":
-        match_data["status"][player]["block"] = True
-        msg += f"🛡️ {player} is blocking next attack!"
-
-    elif move == "counter":
-        match_data["status"][player]["counter"] = True
-        msg += f"🔄 {player} is ready to counter!"
-
-    elif move == "focus":
-        match_data["status"][player]["focus"] = True
-        msg += f"🧠 {player} is focusing for next move!"
-
-    # Apply counter
-    if match_data["status"][opponent]["counter"] and move == "attack":
-        cdmg = random.randint(5, 10)
-        match_data["hp"][player] -= cdmg
-        msg += f"\n🔁 COUNTER! {player} takes {cdmg} reflected damage!"
-
-    # Reset opponent status
-    match_data["status"][opponent] = {"block": False, "focus": False, "counter": False}
-
-    # Check winner
-    if match_data["hp"][opponent] <= 0:
-        msg += f"\n🏆 {player} wins!"
-        await query.edit_message_text(msg)
-        reset()
+    if chat_id not in fights:
+        await query.message.reply_text("⚠️ No active match.")
         return
 
-    match_data["turn"] = 1 - match_data["turn"]
-    await query.edit_message_text(msg)
-    await send_turn(update, context)
+    game = fights[chat_id]
+    if user.id not in game["players"]:
+        await query.message.reply_text("⚠️ You're not in this fight.")
+        return
 
-# 🚀 Run bot
+    game["players"][user.id]["move"] = move
+    await query.message.edit_text(f"{user.first_name} chose their move...")
+
+    # Check if both have selected
+    moves = [p["move"] for p in game["players"].values()]
+    if None not in moves:
+        await resolve_turn(update, context, chat_id)
+
+# Turn resolver
+async def resolve_turn(update, context, chat_id):
+    game = fights[chat_id]
+    ids = list(game["players"].keys())
+    p1, p2 = game["players"][ids[0]], game["players"][ids[1]]
+
+    m1, m2 = p1["move"], p2["move"]
+    log = ""
+
+    # Apply logic
+    def calc(p, m, enemy_m, enemy):
+        info = MOVES[m]
+        if info["type"] == "attack":
+            dmg = info["power"]
+            if MOVES[enemy_m]["type"] == "defend":
+                dmg -= MOVES[enemy_m]["power"]
+                dmg = max(0, dmg)
+            game["players"][enemy]["hp"] -= dmg
+            return f"{p['name']} used {m} ➡️ -{dmg} HP\n"
+        elif info["type"] == "defend":
+            return f"{p['name']} blocked!\n"
+        elif info["type"] == "heal":
+            game["players"][enemy]["hp"] += info["power"]
+            if game["players"][enemy]["hp"] > 100:
+                game["players"][enemy]["hp"] = 100
+            return f"{p['name']} healed +{info['power']} HP\n"
+
+    log += calc(p1, m1, m2, ids[1])
+    log += calc(p2, m2, m1, ids[0])
+
+    # Reset moves
+    for pid in ids:
+        game["players"][pid]["move"] = None
+
+    hp1 = health_bar(p1["hp"])
+    hp2 = health_bar(p2["hp"])
+
+    if p1["hp"] <= 0 or p2["hp"] <= 0:
+        winner = p1["name"] if p1["hp"] > 0 else p2["name"]
+        await context.bot.send_message(chat_id,
+            f"💥 {log}\n"
+            f"{p1['name']} HP: {hp1}\n"
+            f"{p2['name']} HP: {hp2}\n\n"
+            f"🏆 {winner} wins the match!"
+        )
+        del fights[chat_id]
+    else:
+        await context.bot.send_message(chat_id,
+            f"💥 {log}\n"
+            f"{p1['name']} HP: {hp1}\n"
+            f"{p2['name']} HP: {hp2}\n\n"
+            "Choose your next move:",
+            reply_markup=move_buttons()
+    )
+# CCGWWE.py — PART 2
+
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("fight", fight))
-    app.add_handler(CallbackQueryHandler(handle_move))
-    app.run_polling()
+    # 👉 PUT YOUR BOT TOKEN BELOW
+    application = ApplicationBuilder().token("8198938492:AAFE0CxaXVeB8cpyphp7pSV98oiOKlf5Jwo").build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("fight", fight))
+    application.add_handler(CommandHandler("join", join))
+    application.add_handler(CallbackQueryHandler(handle_move))
+
+    print("Bot is running...")
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
