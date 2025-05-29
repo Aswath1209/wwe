@@ -1,142 +1,154 @@
-import os
 import random
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
-    ContextTypes
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# ⬇️ Replace with your actual bot token
-BOT_TOKEN = "7821453313:AAHKskxl8WLbRKTFYccvH3SPSVDeVoEzo6U"
+# 🔐 Your Bot Token
+BOT_TOKEN = "8198938492:AAFE0CxaXVeB8cpyphp7pSV98oiOKlf5Jwo"
 
-# 🗂 Match data
 match_data = {
     "players": [],
     "hp": {},
     "turn": 0,
     "special_used": {},
-    "finisher_ready": {}
+    "focus_used": {},
+    "status": {}
 }
 
-# 🎞 GIFs
-special_moves = {
-    "RKO": "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
-    "Spear": "https://media.giphy.com/media/3o6ZtaO9BZHcOjmErm/giphy.gif"
-}
+# 🎮 Fight buttons
+def move_buttons():
+    keyboard = [
+        [InlineKeyboardButton("🥊 Attack", callback_data="attack"),
+         InlineKeyboardButton("🛡️ Block", callback_data="block")],
+        [InlineKeyboardButton("🔄 Counter", callback_data="counter"),
+         InlineKeyboardButton("🧠 Focus", callback_data="focus")],
+        [InlineKeyboardButton("💥 Special", callback_data="special"),
+         InlineKeyboardButton("🔥 Finisher", callback_data="finisher")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
 
-finishers = {
-    "Tombstone": "https://media.giphy.com/media/3o6Zt6ML6BklcajjsA/giphy.gif",
-    "F5": "https://media.giphy.com/media/3o6ZsY8gZ1uV3gYxkU/giphy.gif"
-}
+# 🔁 Reset match
+def reset():
+    match_data.update({
+        "players": [],
+        "hp": {},
+        "turn": 0,
+        "special_used": {},
+        "focus_used": {},
+        "status": {}
+    })
 
 # 🟢 /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "👊 Welcome to WWE Bot!\nUse /fight to challenge someone!"
-    )
+    await update.message.reply_text("🤼 Welcome to Strategic WWE Bot!\nType /fight to challenge someone.")
 
-# ⚔️ /fight command
+# ⚔️ /fight
 async def fight(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if len(match_data["players"]) == 0:
-        match_data["players"].append(user.username)
-        await update.message.reply_text(
-            f"👑 {user.username} is waiting for an opponent...\nAsk someone to use /fight to join."
-        )
-    elif len(match_data["players"]) == 1 and user.username != match_data["players"][0]:
-        match_data["players"].append(user.username)
-        for p in match_data["players"]:
-            match_data["hp"][p] = 100
-            match_data["special_used"][p] = False
-            match_data["finisher_ready"][p] = False
-        match_data["turn"] = 0
-        await update.message.reply_text(
-            f"🔥 Match started: {match_data['players'][0]} vs {match_data['players'][1]}!\n"
-            f"{match_data['players'][0]} goes first!"
-        )
-        await send_turn_buttons(update, context)
+    user = update.effective_user.username
+    if user in match_data["players"]:
+        await update.message.reply_text("⚠️ You're already in the match.")
+        return
+    if len(match_data["players"]) < 2:
+        match_data["players"].append(user)
+        if len(match_data["players"]) == 1:
+            await update.message.reply_text(f"👑 {user} is waiting for an opponent...")
+        else:
+            for p in match_data["players"]:
+                match_data["hp"][p] = 100
+                match_data["special_used"][p] = False
+                match_data["focus_used"][p] = False
+                match_data["status"][p] = {"block": False, "focus": False, "counter": False}
+            await update.message.reply_text(
+                f"🔥 Match: {match_data['players'][0]} vs {match_data['players'][1]}!\n"
+                f"{match_data['players'][0]} goes first!"
+            )
+            await send_turn(update, context)
     else:
-        await update.message.reply_text("⚠️ Match already in progress!")
+        await update.message.reply_text("⚔️ Match already in progress.")
 
-# 🎮 Buttons for moves
-async def send_turn_buttons(update, context):
-    current = match_data["players"][match_data["turn"]]
-    keyboard = [
-        [InlineKeyboardButton("👊 Attack", callback_data="attack")],
-        [InlineKeyboardButton("💥 Special", callback_data="special")],
-        [InlineKeyboardButton("🔥 Finisher", callback_data="finisher")]
-    ]
-    markup = InlineKeyboardMarkup(keyboard)
+# 📤 Send move options
+async def send_turn(update, context):
+    player = match_data["players"][match_data["turn"]]
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
-        text=f"🎯 {current}, it's your turn!\nChoose your move:",
-        reply_markup=markup
+        text=f"🎯 {player}, choose your move:",
+        reply_markup=move_buttons()
     )
 
-# 🎬 Move logic
+# 🎯 Handle move
 async def handle_move(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user = query.from_user.username
-    if user != match_data["players"][match_data["turn"]]:
-        await query.answer("⏳ Wait for your turn.")
+    player = query.from_user.username
+    if player != match_data["players"][match_data["turn"]]:
+        await query.answer("⏳ Not your turn.")
         return
 
+    opponent = match_data["players"][1 - match_data["turn"]]
     move = query.data
-    attacker = user
-    defender = match_data["players"][1 - match_data["turn"]]
+    msg = ""
 
-    if move == "attack":
-        dmg = random.randint(10, 20)
-        match_data["hp"][defender] -= dmg
-        await query.edit_message_text(f"👊 {attacker} punches {defender} for {dmg} HP!")
-    elif move == "special":
-        if match_data["special_used"][attacker]:
-            await query.answer("❌ Special already used.")
+    # Finisher check
+    if move == "finisher":
+        if match_data["hp"][opponent] > 30:
+            await query.answer("❌ Opponent HP too high!")
             return
-        move_name, gif = random.choice(list(special_moves.items()))
-        dmg = random.randint(20, 30)
-        match_data["hp"][defender] -= dmg
-        match_data["special_used"][attacker] = True
-        await context.bot.send_animation(
-            chat_id=update.effective_chat.id,
-            animation=gif,
-            caption=f"💥 {attacker} hits {move_name} on {defender} (-{dmg})"
-        )
-    elif move == "finisher":
-        if match_data["hp"][defender] > 30:
-            await query.answer("❌ Not ready yet!")
-            return
-        move_name, gif = random.choice(list(finishers.items()))
         dmg = random.randint(35, 50)
-        match_data["hp"][defender] -= dmg
-        await context.bot.send_animation(
-            chat_id=update.effective_chat.id,
-            animation=gif,
-            caption=f"🔥 {attacker} finishes with {move_name}!\n{defender} loses {dmg} HP!"
-        )
+        match_data["hp"][opponent] -= dmg
+        msg += f"🔥 {player} uses FINISHER!\n{opponent} takes {dmg} damage!\n"
 
-    # 💀 Check winner
-    if match_data["hp"][defender] <= 0:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"🏆 {attacker} wins! 🎉"
-        )
-        reset_match()
+    elif move == "special":
+        if match_data["special_used"][player]:
+            await query.answer("❌ Special already used!")
+            return
+        dmg = random.randint(20, 30)
+        match_data["hp"][opponent] -= dmg
+        match_data["special_used"][player] = True
+        match_data["status"][opponent]["block"] = False
+        msg += f"💥 {player} hits a SPECIAL! {opponent} takes {dmg}!\nBlock disabled!"
+
+    elif move == "attack":
+        dmg = random.randint(10, 20)
+        if match_data["status"][opponent]["block"]:
+            dmg = dmg // 2
+            msg += f"🛡️ {opponent} blocked! Damage reduced.\n"
+        if match_data["status"][player]["focus"]:
+            dmg += 5
+            msg += f"🧠 Focus boost! +5 damage.\n"
+        match_data["hp"][opponent] -= dmg
+        msg += f"🥊 {player} attacks {opponent} for {dmg} HP!"
+
+    elif move == "block":
+        match_data["status"][player]["block"] = True
+        msg += f"🛡️ {player} is blocking next attack!"
+
+    elif move == "counter":
+        match_data["status"][player]["counter"] = True
+        msg += f"🔄 {player} is ready to counter!"
+
+    elif move == "focus":
+        match_data["status"][player]["focus"] = True
+        msg += f"🧠 {player} is focusing for next move!"
+
+    # Apply counter
+    if match_data["status"][opponent]["counter"] and move == "attack":
+        cdmg = random.randint(5, 10)
+        match_data["hp"][player] -= cdmg
+        msg += f"\n🔁 COUNTER! {player} takes {cdmg} reflected damage!"
+
+    # Reset opponent status
+    match_data["status"][opponent] = {"block": False, "focus": False, "counter": False}
+
+    # Check winner
+    if match_data["hp"][opponent] <= 0:
+        msg += f"\n🏆 {player} wins!"
+        await query.edit_message_text(msg)
+        reset()
         return
 
-    # 🔁 Next turn
     match_data["turn"] = 1 - match_data["turn"]
-    await send_turn_buttons(update, context)
+    await query.edit_message_text(msg)
+    await send_turn(update, context)
 
-# 🔁 Reset
-def reset_match():
-    match_data["players"].clear()
-    match_data["hp"].clear()
-    match_data["special_used"].clear()
-    match_data["finisher_ready"].clear()
-    match_data["turn"] = 0
-
-# 🚀 Main
+# 🚀 Run bot
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
