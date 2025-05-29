@@ -11,7 +11,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
 
-# Put your bot token here
+# Put your bot toen here
 BOT_TOKEN = "7821453313:AAHKskxl8WLbRKTFYccvH3SPSVDeVoEzo6U"
 
 active_matches = {}  # chat_id -> match data
