@@ -5,7 +5,14 @@ from datetime import datetime
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram.ext import ContextTypes
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
 
 import nest_asyncio
 nest_asyncio.apply()
@@ -69,7 +76,6 @@ def ensure_user(user):
             "balls_faced": 0,
         }
     else:
-        # Update username if changed
         if user.username and USERS[user.id].get("username") != user.username:
             USERS[user.id]["username"] = user.username
 
@@ -122,7 +128,7 @@ def find_player(identifier):
             return u
     return None
 
-# Core commands with error handling
+# Core commands
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -175,50 +181,26 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.reply_text(
             "🏏 *How to Play CCL HandCricket*\n\n"
-            "1️⃣ /register\n"
-            "    Register and get your starting coins.\n\n"
-            "2️⃣ /profile\n"
-            "    See your stats and coin balance.\n\n"
-            "3️⃣ /cclgroup\n"
-            "    Host: Start a new match in the group.\n\n"
-            "4️⃣ /add_A <username|user_id>\n"
-            "    Add a player to Team A. Example: /add_A @john or /add_A 123456789\n\n"
-            "5️⃣ /add_B <username|user_id>\n"
-            "    Add a player to Team B. Example: /add_B @jane or /add_B 987654321\n\n"
-            "6️⃣ /teams\n"
-            "    Show both teams and player numbers.\n\n"
-            "7️⃣ /cap_A <number>\n"
-            "    Assign Team A captain by player number.\n\n"
-            "8️⃣ /cap_B <number>\n"
-            "    Assign Team B captain by player number.\n\n"
-            "9️⃣ /setovers <number>\n"
-            "    Set the number of overs (1-20).\n\n"
-            "🔟 /startmatch\n"
-            "    Start the match after setup.\n\n"
-            "1️⃣1️⃣ /toss\n"
-            "    Host: Start the toss. Team A captain picks heads/tails. Winner picks bat/bowl.\n\n"
-            "1️⃣2️⃣ /bat <striker_num> <non_striker_num>\n"
-            "    Assign striker and non-striker by player number.\n\n"
-            "1️⃣3️⃣ /bowl <bowler_num>\n"
-            "    Assign bowler by player number (no consecutive overs by same bowler).\n\n"
-            "1️⃣4️⃣ Batsman: Send 0,1,2,3,4,6 as a message.\n"
-            "1️⃣5️⃣ Bowler: Send rs, bouncer, yorker, short, slower, or knuckle as a message.\n\n"
-            "1️⃣6️⃣ /score\n"
-            "    Show current score.\n\n"
-            "1️⃣7️⃣ /bonus <A|B> <runs>\n"
-            "    Host: Add bonus runs to a team.\n\n"
-            "1️⃣8️⃣ /penalty <A|B> <runs>\n"
-            "    Host: Deduct runs from a team.\n\n"
-            "1️⃣9️⃣ /inningswap\n"
-            "    Swap innings (with confirmation).\n\n"
-            "2️⃣0️⃣ /endmatch\n"
-            "    End match and show result.\n\n"
-            "*Rules:*\n"
-            "• If batsman sends 0 and bowler sends rs(0), it's OUT.\n"
-            "• Strike rotates on odd runs except last ball of over.\n"
-            "• Host can add players anytime, even after match starts.\n"
-            "• No limit on wickets: all players must be out for 'all out'.\n"
-            "• All communication is text-based.\n",
+            "1️⃣ /register - Register and get starting coins.\n"
+            "2️⃣ /profile - View your stats and coins.\n"
+            "3️⃣ /cclgroup - Host: start a new match.\n"
+            "4️⃣ /add_A <username|user_id> - Add player to Team A.\n"
+            "5️⃣ /add_B <username|user_id> - Add player to Team B.\n"
+            "6️⃣ /teams - Show teams and player numbers.\n"
+            "7️⃣ /cap_A <num> - Assign Team A captain.\n"
+            "8️⃣ /cap_B <num> - Assign Team B captain.\n"
+            "9️⃣ /setovers <num> - Set overs (1-20).\n"
+            "🔟 /startmatch - Start the match.\n"
+            "1️⃣1️⃣ /toss - Start the toss.\n"
+            "1️⃣2️⃣ /bat <striker_num> <non_striker_num> - Assign batsmen.\n"
+            "1️⃣3️⃣ /bowl <bowler_num> - Assign bowler.\n"
+            "1️⃣4️⃣ Send runs (0,1,2,3,4,6) as batsman.\n"
+            "1️⃣5️⃣ Send variation (rs, bouncer, yorker, short, slower, knuckle) as bowler.\n"
+            "1️⃣6️⃣ /score - Show current score.\n"
+            "1️⃣7️⃣ /bonus <A|B> <runs> - Add bonus runs.\n"
+            "1️⃣8️⃣ /penalty <A|B> <runs> - Deduct penalty runs.\n"
+            "1️⃣9️⃣ /inningswap - Swap innings.\n"
+            "2️⃣0️⃣ /endmatch - End match and show result.\n",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -261,11 +243,11 @@ async def cclgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             "🎮 *New Match Created!*\n\n"
-            "1️⃣ Host: Add players with /add_A <username|user_id> or /add_B <username|user_id>\n\n"
-            "2️⃣ Assign captains with /cap_A <num> and /cap_B <num>\n\n"
-            "3️⃣ Set overs with /setovers <num> (1-20)\n\n"
-            "4️⃣ Start match with /startmatch\n\n"
-            "5️⃣ Use /help for step-by-step instructions anytime.",
+            "1️⃣ Host: Add players with /add_A <username|user_id> or /add_B <username|user_id>\n"
+            "2️⃣ Assign captains with /cap_A <num> and /cap_B <num>\n"
+            "3️⃣ Set overs with /setovers <num> (1-20)\n"
+            "4️⃣ Start match with /startmatch\n"
+            "5️⃣ Use /help for instructions.",
             parse_mode="Markdown"
         )
     except Exception as e:
@@ -287,16 +269,12 @@ async def add_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if not args:
-            await update.message.reply_text("Usage: /add_A <username|user_id>  (example: /add_A @john or /add_A 123456789)")
+            await update.message.reply_text("Usage: /add_A <username|user_id>")
             return
 
-        identifier = args[0]
-        player = find_player(identifier)
+        player = find_player(args[0])
         if not player:
-            await update.message.reply_text(
-                f"No registered user found for '{identifier}'.\n"
-                "Make sure they have used /register and have a Telegram username set."
-            )
+            await update.message.reply_text("Player not found or not registered.")
             return
 
         if player in match["team_A"] or player in match["team_B"]:
@@ -307,8 +285,7 @@ async def add_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"Added {player['name']} (@{player.get('username','')}) to Team A.\n"
             f"Team A now has {len(match['team_A'])} players.\n"
-            "Host: Continue adding or assign captain with /cap_A <player_number>.\n"
-            "Use /teams to view both teams."
+            "Assign captain with /cap_A <player_number> or continue adding."
         )
     except Exception as e:
         logger.error(f"Error in /add_A: {e}", exc_info=True)
@@ -329,16 +306,12 @@ async def add_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if not args:
-            await update.message.reply_text("Usage: /add_B <username|user_id>  (example: /add_B @jane or /add_B 987654321)")
+            await update.message.reply_text("Usage: /add_B <username|user_id>")
             return
 
-        identifier = args[0]
-        player = find_player(identifier)
+        player = find_player(args[0])
         if not player:
-            await update.message.reply_text(
-                f"No registered user found for '{identifier}'.\n"
-                "Make sure they have used /register and have a Telegram username set."
-            )
+            await update.message.reply_text("Player not found or not registered.")
             return
 
         if player in match["team_A"] or player in match["team_B"]:
@@ -349,8 +322,7 @@ async def add_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"Added {player['name']} (@{player.get('username','')}) to Team B.\n"
             f"Team B now has {len(match['team_B'])} players.\n"
-            "Host: Continue adding or assign captain with /cap_B <player_number>.\n"
-            "Use /teams to view both teams."
+            "Assign captain with /cap_B <player_number> or continue adding."
         )
     except Exception as e:
         logger.error(f"Error in /add_B: {e}", exc_info=True)
@@ -363,27 +335,151 @@ async def teams_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         match = MATCHES[chat.id]
-        text = f"Teams for current match:\n\n*Team A*:\n"
+        text = "*Team A:*\n"
         if match["team_A"]:
-            for i, p in enumerate(match["team_A"], start=1):
+            for i, p in enumerate(match["team_A"], 1):
                 text += f"{i}. {p['name']} (@{p.get('username','')})\n"
         else:
-            text += "No players added yet.\n"
+            text += "No players added.\n"
 
-        text += f"\n*Team B*:\n"
+        text += "\n*Team B:*\n"
         if match["team_B"]:
-            for i, p in enumerate(match["team_B"], start=1):
+            for i, p in enumerate(match["team_B"], 1):
                 text += f"{i}. {p['name']} (@{p.get('username','')})\n"
         else:
-            text += "No players added yet.\n"
+            text += "No players added.\n"
 
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in /teams: {e}", exc_info=True)
 
-# Similar error handling should be added to other commands in next parts.
-# --- Interactive Toss Flow ---
+async def cap_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        chat = update.effective_chat
+        user = update.effective_user
+        args = context.args
 
+        if chat.id not in MATCHES:
+            await update.message.reply_text("No ongoing match in this chat.")
+            return
+
+        match = MATCHES[chat.id]
+        if user.id != match["host_id"]:
+            await update.message.reply_text("Only the host can assign captains.")
+            return
+
+        if not args or not args[0].isdigit():
+            await update.message.reply_text("Usage: /cap_A <player_number>")
+            return
+
+        player_num = int(args[0])
+        if player_num < 1 or player_num > len(match["team_A"]):
+            await update.message.reply_text("Invalid player number for Team A.")
+            return
+
+        match["captain_A"] = match["team_A"][player_num - 1]
+        await update.message.reply_text(
+            f"Captain for Team A set to {match['captain_A']['name']} (@{match['captain_A'].get('username','')}).\n"
+            "Assign Team B captain with /cap_B <player_number>."
+        )
+    except Exception as e:
+        logger.error(f"Error in /cap_A: {e}", exc_info=True)
+
+async def cap_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        chat = update.effective_chat
+        user = update.effective_user
+        args = context.args
+
+        if chat.id not in MATCHES:
+            await update.message.reply_text("No ongoing match in this chat.")
+            return
+
+        match = MATCHES[chat.id]
+        if user.id != match["host_id"]:
+            await update.message.reply_text("Only the host can assign captains.")
+            return
+
+        if not args or not args[0].isdigit():
+            await update.message.reply_text("Usage: /cap_B <player_number>")
+            return
+
+        player_num = int(args[0])
+        if player_num < 1 or player_num > len(match["team_B"]):
+            await update.message.reply_text("Invalid player number for Team B.")
+            return
+
+        match["captain_B"] = match["team_B"][player_num - 1]
+        await update.message.reply_text(
+            f"Captain for Team B set to {match['captain_B']['name']} (@{match['captain_B'].get('username','')}).\n"
+            "Set overs with /setovers <number>."
+        )
+    except Exception as e:
+        logger.error(f"Error in /cap_B: {e}", exc_info=True)
+
+async def setovers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        chat = update.effective_chat
+        user = update.effective_user
+        args = context.args
+
+        if chat.id not in MATCHES:
+            await update.message.reply_text("No ongoing match in this chat.")
+            return
+
+        match = MATCHES[chat.id]
+        if user.id != match["host_id"]:
+            await update.message.reply_text("Only the host can set overs.")
+            return
+
+        if not args or not args[0].isdigit():
+            await update.message.reply_text("Usage: /setovers <number_of_overs>")
+            return
+
+        overs = int(args[0])
+        if overs < 1 or overs > 20:
+            await update.message.reply_text("Overs must be between 1 and 20.")
+            return
+
+        match["overs"] = overs
+        await update.message.reply_text(
+            f"Overs set to {overs}.\nHost: When ready, start the match with /startmatch."
+        )
+    except Exception as e:
+        logger.error(f"Error in /setovers: {e}", exc_info=True)
+
+async def startmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        chat = update.effective_chat
+        user = update.effective_user
+
+        if chat.id not in MATCHES:
+            await update.message.reply_text("No ongoing match in this chat.")
+            return
+
+        match = MATCHES[chat.id]
+        if user.id != match["host_id"]:
+            await update.message.reply_text("Only the host can start the match.")
+            return
+
+        if len(match["team_A"]) < 1 or len(match["team_B"]) < 1:
+            await update.message.reply_text("Both teams must have at least 1 player.")
+            return
+
+        if match["captain_A"] is None or match["captain_B"] is None:
+            await update.message.reply_text("Captains must be assigned for both teams.")
+            return
+
+        if match["overs"] is None:
+            await update.message.reply_text("Overs must be set before starting the match.")
+            return
+
+        match["state"] = "toss"
+        await update.message.reply_text(
+            "✅ Match setup complete!\n\nHost: Use /toss to start the toss."
+        )
+    except Exception as e:
+        logger.error(f"Error in /startmatch: {e}", exc_info=True)
 async def toss_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat = update.effective_chat
@@ -653,7 +749,6 @@ async def handle_ball_result(update, context, match):
         bowler = match["current_bowler"]
         batting_team_key = match["batting_team"]
 
-        # Wicket check
         if runs == 0 and variation == 0:
             match["wickets"][batting_team_key] += 1
             match["players_out"][batting_team_key].append(striker)
@@ -665,10 +760,9 @@ async def handle_ball_result(update, context, match):
                 f"Host: Assign new batsman with /bat <striker_num> <non_striker_num>.",
                 parse_mode="Markdown"
             )
-            match["striker"] = None  # Host must assign new striker
+            match["striker"] = None
             return
 
-        # Normal runs
         match["score"][batting_team_key] += runs
         striker["runs_scored"] = striker.get("runs_scored", 0) + runs
         striker["balls_faced"] = striker.get("balls_faced", 0) + 1
@@ -721,15 +815,29 @@ async def handle_ball_result(update, context, match):
     except Exception as e:
         logger.error(f"Error in handle_ball_result: {e}", exc_info=True)
 
-# Admin commands (bonus, penalty, inningswap, endmatch) with similar error handling omitted here for brevity.
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
-)
+async def score_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        chat = update.effective_chat
+        if chat.id not in MATCHES:
+            await update.message.reply_text("No ongoing match in this chat.")
+            return
+        match = MATCHES[chat.id]
+        a = match['score']['A']
+        b = match['score']['B']
+        wa = match['wickets']['A']
+        wb = match['wickets']['B']
+        balls = match['balls']
+        overs = match['overs']
+        batting = match.get("batting_team", "A")
+        await update.message.reply_text(
+            f"Team A: {a}/{wa}\nTeam B: {b}/{wb}\n"
+            f"Overs: {balls//6}.{balls%6} / {overs}\n"
+            f"Currently Batting: Team {batting}"
+        )
+    except Exception as e:
+        logger.error(f"Error in /score: {e}", exc_info=True)
 
+# Admin commands (bonus, penalty, inningswap, endmatch) would follow with similar structure and error handling.
 def register_handlers(application):
     # Core commands
     application.add_handler(CommandHandler("start", start))
@@ -750,16 +858,13 @@ def register_handlers(application):
     application.add_handler(CommandHandler("bat", bat_command))
     application.add_handler(CommandHandler("bowl", bowl_command))
     application.add_handler(CommandHandler("score", score_command))
-    application.add_handler(CommandHandler("bonus", bonus_command))
-    application.add_handler(CommandHandler("penalty", penalty_command))
-    application.add_handler(CommandHandler("inningswap", inningswap_command))
-    application.add_handler(CommandHandler("endmatch", endmatch_command))
+    # Admin commands (bonus, penalty, inningswap, endmatch) to be added here similarly
     # Ball-by-ball play (text)
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), process_ball))
-    # Callback for toss and innings swap
+    # Callback handlers for toss and innings swap
     application.add_handler(CallbackQueryHandler(toss_callback, pattern="^toss_(heads|tails)$"))
     application.add_handler(CallbackQueryHandler(toss_batbowl_callback, pattern="^toss_(bat|bowl)$"))
-    application.add_handler(CallbackQueryHandler(inningswap_callback, pattern="^inningswap_"))
+    # Add inningswap callback handler here if implemented
 
 async def on_startup(application):
     try:
