@@ -45,14 +45,6 @@ BOWLER_VARIATIONS_MAP = {
 }
 ALLOWED_BOWLER_VARIATIONS = set(BOWLER_VARIATIONS_MAP.keys())
 
-COMMENTARY_PHRASES = {
-    0: ["Dot ball!", "Good defense.", "No run this ball."],
-    1: ["Quick single taken.", "Good running between the wickets."],
-    2: ["Two runs scored.", "Excellent placement for two."],
-    3: ["Three runs! Great running!"],
-    4: ["That's a boundary!", "Four runs! What a shot!"],
-    6: ["SIX! What a massive hit!", "That's out of the park!"],
-}
 GIFS = {
     0: "https://media.giphy.com/media/3o6Zt481isNVuQI1l6/giphy.gif",  # dot ball
     4: "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",  # four runs
@@ -110,7 +102,6 @@ def get_variation_name(variation_num):
     return "UNKNOWN"
 
 def find_player_by_username(username):
-    """Find player by Telegram username (case-insensitive, without @)."""
     username = username.lstrip("@").lower()
     for u in USERS.values():
         if u.get("username") and u["username"].lower() == username:
@@ -265,14 +256,17 @@ async def add_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Only the host can add players.")
         return
 
-    if not args:
+    if not args or not args[0].startswith("@"):
         await update.message.reply_text("Usage: /add_A <username>  (example: /add_A @john)")
         return
 
-    username = args[0]
+    username = args[0].lstrip("@")
     player = find_player_by_username(username)
     if not player:
-        await update.message.reply_text(f"No registered user found for '{username}'. Make sure they have used /register and have a Telegram username.")
+        await update.message.reply_text(
+            f"No registered user found for '@{username}'.\n"
+            "Make sure they have used /register and have a Telegram username set in their Telegram settings."
+        )
         return
 
     if player in match["team_A"] or player in match["team_B"]:
@@ -301,14 +295,17 @@ async def add_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Only the host can add players.")
         return
 
-    if not args:
+    if not args or not args[0].startswith("@"):
         await update.message.reply_text("Usage: /add_B <username>  (example: /add_B @jane)")
         return
 
-    username = args[0]
+    username = args[0].lstrip("@")
     player = find_player_by_username(username)
     if not player:
-        await update.message.reply_text(f"No registered user found for '{username}'. Make sure they have used /register and have a Telegram username.")
+        await update.message.reply_text(
+            f"No registered user found for '@{username}'.\n"
+            "Make sure they have used /register and have a Telegram username set in their Telegram settings."
+        )
         return
 
     if player in match["team_A"] or player in match["team_B"]:
@@ -456,8 +453,7 @@ async def startmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await update.message.reply_text(
         "✅ Match setup complete!\n\n"
         "Host: Use /toss to start the toss."
-    )
-
+                       )
 # --- Interactive Toss Flow ---
 
 async def toss_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -813,6 +809,7 @@ async def score_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Overs: {balls//6}.{balls%6} / {overs}\n"
         f"Currently Batting: Team {batting}"
     )
+
 # --- Admin, Innings, and End Commands ---
 
 async def bonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -947,9 +944,6 @@ async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Cleanup
     del MATCHES[chat.id]
-
-# --- Handler Registration and Main Function ---
-
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
 def register_handlers(application):
