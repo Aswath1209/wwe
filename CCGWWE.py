@@ -2,7 +2,7 @@ import asyncio
 import random
 import os
 from datetime import datetime
-from telegram import (
+from telegram.constants import ChatAction (
     Update, InlineKeyboardMarkup, InlineKeyboardButton, ChatAction
 )
 from telegram.ext import (
