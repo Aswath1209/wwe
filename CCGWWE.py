@@ -1039,7 +1039,7 @@ from telegram.ext import ContextTypes
 
 # ────────────────────────────────
 # Add players mid-match (host only)
-/add_A and /add_B commands supporting mid-match additions
+#/add_A and /add_B commands supporting mid-match additions
 # ────────────────────────────────
 
 async def add_player_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
