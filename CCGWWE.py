@@ -62,13 +62,19 @@ GIFS = {
 }
 
 def get_username(user):
-    return user.first_name or user.username or "Player"
+    # Prefer Telegram username, else first_name, else ID
+    if hasattr(user, "username") and user.username:
+        return user.username
+    if hasattr(user, "first_name") and user.first_name:
+        return user.first_name
+    return str(user.id)
 
 def ensure_user(user):
     if user.id not in USERS:
         USERS[user.id] = {
             "user_id": user.id,
             "name": get_username(user),
+            "username": getattr(user, "username", None),
             "coins": 0,
             "wins": 0,
             "losses": 0,
@@ -111,6 +117,27 @@ def get_variation_name(variation_num):
             return k.upper()
     return "UNKNOWN"
 
+def find_player(identifier):
+    """Find player by username, display name, or user_id (string or int)."""
+    identifier = identifier.lstrip("@").strip()
+    # Try by user_id
+    try:
+        identifier_num = int(identifier)
+        for u in USERS.values():
+            if u["user_id"] == identifier_num:
+                return u
+    except Exception:
+        pass
+    # Try by username (case-insensitive)
+    for u in USERS.values():
+        if u.get("username") and u["username"].lower() == identifier.lower():
+            return u
+    # Try by display name (case-insensitive)
+    for u in USERS.values():
+        if u["name"].lower() == identifier.lower():
+            return u
+    return None
+
 # --- Core Commands ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -118,9 +145,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(user)
     await save_user(user.id)
     await update.message.reply_text(
-        f"Welcome to CCL HandCricket Bot, {USERS[user.id]['name']}!\n"
-        f"Use /register to get 4000 {COINS_EMOJI} and start playing.\n"
-        f"Use /help for command list."
+        f"Welcome to CCL HandCricket Bot, {USERS[user.id]['name']}!\n\n"
+        f"• Use /register to get 4000 {COINS_EMOJI} and start playing.\n"
+        f"• Use /help for step-by-step instructions."
     )
 
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -140,39 +167,61 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(user)
     u = USERS[user.id]
     text = (
-        f"{u['name']}'s Profile\n"
-        f"ID: {user.id}\n"
+        f"👤 *{u['name']}'s Profile*\n"
+        f"ID: `{user.id}`\n"
         f"Purse: {u['coins']}{COINS_EMOJI}\n"
-        f"Wins: {u['wins']}  Losses: {u['losses']}  Ties: {u['ties']}\n"
-        f"Runs Scored: {u.get('runs_scored', 0)}  Balls Faced: {u.get('balls_faced', 0)}"
+        f"Wins: {u['wins']}   Losses: {u['losses']}   Ties: {u['ties']}\n"
+        f"Runs Scored: {u.get('runs_scored', 0)}   Balls Faced: {u.get('balls_faced', 0)}"
     )
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🏏 *CCL HandCricket Bot Help*\n"
-        "\n"
-        "1. /register - Register and get coins\n"
-        "2. /profile - View your stats\n"
-        "3. /cclgroup - Host: Start a new match in group\n"
-        "4. /add_A @username or /add_B @username - Add players to teams\n"
-        "5. /teams - Show teams\n"
-        "6. /cap_A <num> or /cap_B <num> - Assign captains\n"
-        "7. /setovers <num> - Set overs (1-20)\n"
-        "8. /startmatch - Start match after setup\n"
-        "9. /bat <striker_num> <non_striker_num> - Assign batsmen\n"
-        "10. /bowl <bowler_num> - Assign bowler (no consecutive overs)\n"
-        "11. Batsman: Send 0,1,2,3,4,6 | Bowler: Send rs,bouncer,yorker,short,slower,knuckle\n"
-        "12. /score - Show current score\n"
-        "13. /bonus <A|B> <runs> or /penalty <A|B> <runs>\n"
-        "14. /inningswap - Swap innings (with confirm)\n"
-        "15. /endmatch - End match and show result\n"
-        "\n"
+        "🏏 *CCL HandCricket Bot Instructions*\n\n"
+        "• /register\n"
+        "    Register and get your starting coins.\n\n"
+        "• /profile\n"
+        "    See your stats and coin balance.\n\n"
+        "• /cclgroup\n"
+        "    Host: Start a new match in the group.\n\n"
+        "• /add_A <username|displayname|user_id>\n"
+        "    Add a player to Team A. Example: /add_A @john or /add_A John or /add_A 123456789\n\n"
+        "• /add_B <username|displayname|user_id>\n"
+        "    Add a player to Team B.\n\n"
+        "• /teams\n"
+        "    Show both teams and player numbers.\n\n"
+        "• /cap_A <number>\n"
+        "    Assign Team A captain by player number.\n\n"
+        "• /cap_B <number>\n"
+        "    Assign Team B captain by player number.\n\n"
+        "• /setovers <number>\n"
+        "    Set the number of overs (1-20).\n\n"
+        "• /startmatch\n"
+        "    Start the match after setup.\n\n"
+        "• /toss <A|B> <A|B>\n"
+        "    Host: Set which team bats/bowls first. Example: /toss A B\n\n"
+        "• /bat <striker_num> <non_striker_num>\n"
+        "    Assign striker and non-striker by player number.\n\n"
+        "• /bowl <bowler_num>\n"
+        "    Assign bowler by player number (no consecutive overs by same bowler).\n\n"
+        "• Batsman: Send 0,1,2,3,4,6 as a message.\n"
+        "• Bowler: Send rs, bouncer, yorker, short, slower, or knuckle as a message.\n\n"
+        "• /score\n"
+        "    Show current score.\n\n"
+        "• /bonus <A|B> <runs>\n"
+        "    Host: Add bonus runs to a team.\n\n"
+        "• /penalty <A|B> <runs>\n"
+        "    Host: Deduct runs from a team.\n\n"
+        "• /inningswap\n"
+        "    Swap innings (with confirmation).\n\n"
+        "• /endmatch\n"
+        "    End match and show result.\n\n"
         "*Rules:*\n"
-        "- If batsman sends 0 and bowler sends rs(0), it's OUT.\n"
-        "- Strike rotates on odd runs except last ball of over.\n"
-        "- Host can add players anytime.\n"
-        "- All communication is text-based.\n",
+        "• If batsman sends 0 and bowler sends rs(0), it's OUT.\n"
+        "• Strike rotates on odd runs except last ball of over.\n"
+        "• Host can add players anytime, even after match starts.\n"
+        "• No limit on wickets: all players must be out for 'all out'.\n"
+        "• All communication is text-based.\n",
         parse_mode="Markdown"
     )
 
@@ -211,11 +260,11 @@ async def cclgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"Match created by {user.first_name}!\n\n"
-        "Host: Add players with /add_A @username or /add_B @username (max 8 per team).\n"
-        "Then assign captains with /cap_A <num> and /cap_B <num>.\n"
-        "Set overs with /setovers <num> (1-20).\n"
-        "Start match with /startmatch.\n"
-        "Use /help for full instructions."
+        "1️⃣ Host: Add players with /add_A <username|displayname|user_id> or /add_B <username|displayname|user_id>\n"
+        "2️⃣ Assign captains with /cap_A <num> and /cap_B <num>\n"
+        "3️⃣ Set overs with /setovers <num> (1-20)\n"
+        "4️⃣ Start match with /startmatch\n"
+        "5️⃣ Use /help for step-by-step instructions anytime."
     )
 # --- Team Management and Match Setup Commands ---
 
@@ -234,26 +283,17 @@ async def add_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not args:
-        await update.message.reply_text("Usage: /add_A @username")
+        await update.message.reply_text("Usage: /add_A <username|displayname|user_id>")
         return
 
-    username = args[0].lstrip("@")
-    player = None
-    for u in USERS.values():
-        if u["name"].lower() == username.lower():
-            player = u
-            break
-
+    identifier = args[0]
+    player = find_player(identifier)
     if not player:
-        await update.message.reply_text(f"User @{username} not found or not registered.")
+        await update.message.reply_text(f"No registered user found for '{identifier}'. Make sure they have used /register.")
         return
 
     if player in match["team_A"] or player in match["team_B"]:
         await update.message.reply_text(f"{player['name']} is already in a team.")
-        return
-
-    if len(match["team_A"]) >= 8:
-        await update.message.reply_text("Team A already has 8 players.")
         return
 
     match["team_A"].append(player)
@@ -279,26 +319,17 @@ async def add_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not args:
-        await update.message.reply_text("Usage: /add_B @username")
+        await update.message.reply_text("Usage: /add_B <username|displayname|user_id>")
         return
 
-    username = args[0].lstrip("@")
-    player = None
-    for u in USERS.values():
-        if u["name"].lower() == username.lower():
-            player = u
-            break
-
+    identifier = args[0]
+    player = find_player(identifier)
     if not player:
-        await update.message.reply_text(f"User @{username} not found or not registered.")
+        await update.message.reply_text(f"No registered user found for '{identifier}'. Make sure they have used /register.")
         return
 
     if player in match["team_A"] or player in match["team_B"]:
         await update.message.reply_text(f"{player['name']} is already in a team.")
-        return
-
-    if len(match["team_B"]) >= 8:
-        await update.message.reply_text("Team B already has 8 players.")
         return
 
     match["team_B"].append(player)
@@ -440,10 +471,35 @@ async def startmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     match["state"] = "toss"
     await update.message.reply_text(
-        f"Match setup complete!\n"
-        f"Host: Conduct the toss and set which team bats first by setting 'batting_team' and 'bowling_team' in the code (or add a toss command if you wish).\n"
-        f"Then assign batsmen with /bat <striker_num> <non_striker_num> and bowler with /bowl <bowler_num>."
-        )
+        "✅ Match setup complete!\n\n"
+        "Host:\n"
+        "• Use /toss <A|B> <A|B> to set which team bats/bowls first (e.g. /toss A B)\n"
+        "• Then assign batsmen with /bat <striker_num> <non_striker_num>\n"
+        "• Assign bowler with /bowl <bowler_num>\n"
+        "• Use /help for step-by-step instructions."
+    )
+
+async def toss_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    args = context.args
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match.")
+        return
+    match = MATCHES[chat.id]
+    if user.id != match["host_id"]:
+        await update.message.reply_text("Only host can set batting/bowling team.")
+        return
+    if len(args) != 2 or args[0].upper() not in ("A", "B") or args[1].upper() not in ("A", "B") or args[0].upper() == args[1].upper():
+        await update.message.reply_text("Usage: /toss <A|B> <A|B> (batting_team bowling_team, must be different)")
+        return
+    match["batting_team"] = args[0].upper()
+    match["bowling_team"] = args[1].upper()
+    await update.message.reply_text(
+        f"Batting: Team {match['batting_team']}\n"
+        f"Bowling: Team {match['bowling_team']}\n"
+        f"Assign batsmen with /bat <striker_num> <non_striker_num> and bowler with /bowl <bowler_num>."
+    )
 # --- Batting, Bowling, and Ball-by-Ball Play ---
 
 async def bat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -464,7 +520,7 @@ async def bat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not match.get("batting_team"):
-        await update.message.reply_text("Host: Please set 'batting_team' and 'bowling_team' in the code or via a toss command before assigning batsmen.")
+        await update.message.reply_text("Host: Please set 'batting_team' and 'bowling_team' with /toss before assigning batsmen.")
         return
 
     striker_num, non_striker_num = map(int, args)
@@ -516,7 +572,7 @@ async def bowl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not match.get("bowling_team"):
-        await update.message.reply_text("Host: Please set 'batting_team' and 'bowling_team' in the code or via a toss command before assigning bowler.")
+        await update.message.reply_text("Host: Please set 'batting_team' and 'bowling_team' with /toss before assigning bowler.")
         return
 
     bowling_team_key = match["bowling_team"]
@@ -656,7 +712,7 @@ async def handle_ball_result(update, context, match):
 
     # Check for all out or overs completed
     team_size = len(match["team_A"]) if batting_team_key == "A" else len(match["team_B"])
-    if match["wickets"][batting_team_key] >= team_size - 1:
+    if match["wickets"][batting_team_key] >= team_size:
         await update.message.reply_text("All out! Host: Use /inningswap to swap innings.")
     elif match["balls"] >= match["overs"] * 6:
         await update.message.reply_text("Overs completed! Host: Use /inningswap to swap innings.")
@@ -833,6 +889,7 @@ def register_handlers(application):
     application.add_handler(CommandHandler("cap_B", cap_B_command))
     application.add_handler(CommandHandler("setovers", setovers_command))
     application.add_handler(CommandHandler("startmatch", startmatch_command))
+    application.add_handler(CommandHandler("toss", toss_command))
     # Gameplay
     application.add_handler(CommandHandler("bat", bat_command))
     application.add_handler(CommandHandler("bowl", bowl_command))
