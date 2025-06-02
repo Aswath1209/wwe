@@ -61,20 +61,12 @@ GIFS = {
     "century": "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
 }
 
-def get_username(user):
-    # Prefer Telegram username, else first_name, else ID
-    if hasattr(user, "username") and user.username:
-        return user.username
-    if hasattr(user, "first_name") and user.first_name:
-        return user.first_name
-    return str(user.id)
-
 def ensure_user(user):
     if user.id not in USERS:
         USERS[user.id] = {
             "user_id": user.id,
-            "name": get_username(user),
-            "username": getattr(user, "username", None),
+            "name": user.first_name or user.username or "Player",
+            "username": user.username,
             "coins": 0,
             "wins": 0,
             "losses": 0,
@@ -117,24 +109,11 @@ def get_variation_name(variation_num):
             return k.upper()
     return "UNKNOWN"
 
-def find_player(identifier):
-    """Find player by username, display name, or user_id (string or int)."""
-    identifier = identifier.lstrip("@").strip()
-    # Try by user_id
-    try:
-        identifier_num = int(identifier)
-        for u in USERS.values():
-            if u["user_id"] == identifier_num:
-                return u
-    except Exception:
-        pass
-    # Try by username (case-insensitive)
+def find_player_by_username(username):
+    """Find player by Telegram username (case-insensitive, without @)."""
+    username = username.lstrip("@").lower()
     for u in USERS.values():
-        if u.get("username") and u["username"].lower() == identifier.lower():
-            return u
-    # Try by display name (case-insensitive)
-    for u in USERS.values():
-        if u["name"].lower() == identifier.lower():
+        if u.get("username") and u["username"].lower() == username:
             return u
     return None
 
@@ -145,9 +124,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(user)
     await save_user(user.id)
     await update.message.reply_text(
-        f"Welcome to CCL HandCricket Bot, {USERS[user.id]['name']}!\n\n"
-        f"• Use /register to get 4000 {COINS_EMOJI} and start playing.\n"
-        f"• Use /help for step-by-step instructions."
+        "🏏 *Welcome to CCL HandCricket Bot!*\n\n"
+        "1️⃣ Use /register to get 4000 🪙 and start playing.\n\n"
+        "2️⃣ Use /help for step-by-step instructions.",
+        parse_mode="Markdown"
     )
 
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -169,6 +149,7 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         f"👤 *{u['name']}'s Profile*\n"
         f"ID: `{user.id}`\n"
+        f"Username: @{u['username']}\n"
         f"Purse: {u['coins']}{COINS_EMOJI}\n"
         f"Wins: {u['wins']}   Losses: {u['losses']}   Ties: {u['ties']}\n"
         f"Runs Scored: {u.get('runs_scored', 0)}   Balls Faced: {u.get('balls_faced', 0)}"
@@ -177,44 +158,44 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🏏 *CCL HandCricket Bot Instructions*\n\n"
-        "• /register\n"
+        "🏏 *How to Play CCL HandCricket*\n\n"
+        "1️⃣ /register\n"
         "    Register and get your starting coins.\n\n"
-        "• /profile\n"
+        "2️⃣ /profile\n"
         "    See your stats and coin balance.\n\n"
-        "• /cclgroup\n"
+        "3️⃣ /cclgroup\n"
         "    Host: Start a new match in the group.\n\n"
-        "• /add_A <username|displayname|user_id>\n"
-        "    Add a player to Team A. Example: /add_A @john or /add_A John or /add_A 123456789\n\n"
-        "• /add_B <username|displayname|user_id>\n"
-        "    Add a player to Team B.\n\n"
-        "• /teams\n"
+        "4️⃣ /add_A <username>\n"
+        "    Add a player to Team A. Example: /add_A @john\n\n"
+        "5️⃣ /add_B <username>\n"
+        "    Add a player to Team B. Example: /add_B @jane\n\n"
+        "6️⃣ /teams\n"
         "    Show both teams and player numbers.\n\n"
-        "• /cap_A <number>\n"
+        "7️⃣ /cap_A <number>\n"
         "    Assign Team A captain by player number.\n\n"
-        "• /cap_B <number>\n"
+        "8️⃣ /cap_B <number>\n"
         "    Assign Team B captain by player number.\n\n"
-        "• /setovers <number>\n"
+        "9️⃣ /setovers <number>\n"
         "    Set the number of overs (1-20).\n\n"
-        "• /startmatch\n"
+        "🔟 /startmatch\n"
         "    Start the match after setup.\n\n"
-        "• /toss <A|B> <A|B>\n"
-        "    Host: Set which team bats/bowls first. Example: /toss A B\n\n"
-        "• /bat <striker_num> <non_striker_num>\n"
+        "1️⃣1️⃣ /toss\n"
+        "    Host: Start the toss. Team A captain picks heads/tails. Winner picks bat/bowl.\n\n"
+        "1️⃣2️⃣ /bat <striker_num> <non_striker_num>\n"
         "    Assign striker and non-striker by player number.\n\n"
-        "• /bowl <bowler_num>\n"
+        "1️⃣3️⃣ /bowl <bowler_num>\n"
         "    Assign bowler by player number (no consecutive overs by same bowler).\n\n"
-        "• Batsman: Send 0,1,2,3,4,6 as a message.\n"
-        "• Bowler: Send rs, bouncer, yorker, short, slower, or knuckle as a message.\n\n"
-        "• /score\n"
+        "1️⃣4️⃣ Batsman: Send 0,1,2,3,4,6 as a message.\n"
+        "1️⃣5️⃣ Bowler: Send rs, bouncer, yorker, short, slower, or knuckle as a message.\n\n"
+        "1️⃣6️⃣ /score\n"
         "    Show current score.\n\n"
-        "• /bonus <A|B> <runs>\n"
+        "1️⃣7️⃣ /bonus <A|B> <runs>\n"
         "    Host: Add bonus runs to a team.\n\n"
-        "• /penalty <A|B> <runs>\n"
+        "1️⃣8️⃣ /penalty <A|B> <runs>\n"
         "    Host: Deduct runs from a team.\n\n"
-        "• /inningswap\n"
+        "1️⃣9️⃣ /inningswap\n"
         "    Swap innings (with confirmation).\n\n"
-        "• /endmatch\n"
+        "2️⃣0️⃣ /endmatch\n"
         "    End match and show result.\n\n"
         "*Rules:*\n"
         "• If batsman sends 0 and bowler sends rs(0), it's OUT.\n"
@@ -256,15 +237,17 @@ async def cclgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "last_bowler": None,
         "innings": 1,
         "players_out": {"A": [], "B": []},
+        "toss": {"state": None, "choice": None, "winner": None, "batbowl": None}
     }
 
     await update.message.reply_text(
-        f"Match created by {user.first_name}!\n\n"
-        "1️⃣ Host: Add players with /add_A <username|displayname|user_id> or /add_B <username|displayname|user_id>\n"
-        "2️⃣ Assign captains with /cap_A <num> and /cap_B <num>\n"
-        "3️⃣ Set overs with /setovers <num> (1-20)\n"
-        "4️⃣ Start match with /startmatch\n"
-        "5️⃣ Use /help for step-by-step instructions anytime."
+        "🎮 *New Match Created!*\n\n"
+        "1️⃣ Host: Add players with /add_A <username> or /add_B <username>\n\n"
+        "2️⃣ Assign captains with /cap_A <num> and /cap_B <num>\n\n"
+        "3️⃣ Set overs with /setovers <num> (1-20)\n\n"
+        "4️⃣ Start match with /startmatch\n\n"
+        "5️⃣ Use /help for step-by-step instructions anytime.",
+        parse_mode="Markdown"
     )
 # --- Team Management and Match Setup Commands ---
 
@@ -283,22 +266,22 @@ async def add_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not args:
-        await update.message.reply_text("Usage: /add_A <username|displayname|user_id>")
+        await update.message.reply_text("Usage: /add_A <username>  (example: /add_A @john)")
         return
 
-    identifier = args[0]
-    player = find_player(identifier)
+    username = args[0]
+    player = find_player_by_username(username)
     if not player:
-        await update.message.reply_text(f"No registered user found for '{identifier}'. Make sure they have used /register.")
+        await update.message.reply_text(f"No registered user found for '{username}'. Make sure they have used /register and have a Telegram username.")
         return
 
     if player in match["team_A"] or player in match["team_B"]:
-        await update.message.reply_text(f"{player['name']} is already in a team.")
+        await update.message.reply_text(f"{player['name']} (@{player['username']}) is already in a team.")
         return
 
     match["team_A"].append(player)
     await update.message.reply_text(
-        f"Added {player['name']} to Team A.\n"
+        f"Added {player['name']} (@{player['username']}) to Team A.\n"
         f"Team A now has {len(match['team_A'])} players.\n"
         "Host: Continue adding or assign captain with /cap_A <player_number>.\n"
         "Use /teams to view both teams."
@@ -319,22 +302,22 @@ async def add_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not args:
-        await update.message.reply_text("Usage: /add_B <username|displayname|user_id>")
+        await update.message.reply_text("Usage: /add_B <username>  (example: /add_B @jane)")
         return
 
-    identifier = args[0]
-    player = find_player(identifier)
+    username = args[0]
+    player = find_player_by_username(username)
     if not player:
-        await update.message.reply_text(f"No registered user found for '{identifier}'. Make sure they have used /register.")
+        await update.message.reply_text(f"No registered user found for '{username}'. Make sure they have used /register and have a Telegram username.")
         return
 
     if player in match["team_A"] or player in match["team_B"]:
-        await update.message.reply_text(f"{player['name']} is already in a team.")
+        await update.message.reply_text(f"{player['name']} (@{player['username']}) is already in a team.")
         return
 
     match["team_B"].append(player)
     await update.message.reply_text(
-        f"Added {player['name']} to Team B.\n"
+        f"Added {player['name']} (@{player['username']}) to Team B.\n"
         f"Team B now has {len(match['team_B'])} players.\n"
         "Host: Continue adding or assign captain with /cap_B <player_number>.\n"
         "Use /teams to view both teams."
@@ -350,14 +333,14 @@ async def teams_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"Teams for current match:\n\n*Team A*:\n"
     if match["team_A"]:
         for i, p in enumerate(match["team_A"], start=1):
-            text += f"{i}. {p['name']}\n"
+            text += f"{i}. {p['name']} (@{p['username']})\n"
     else:
         text += "No players added yet.\n"
 
     text += f"\n*Team B*:\n"
     if match["team_B"]:
         for i, p in enumerate(match["team_B"], start=1):
-            text += f"{i}. {p['name']}\n"
+            text += f"{i}. {p['name']} (@{p['username']})\n"
     else:
         text += "No players added yet.\n"
 
@@ -387,7 +370,7 @@ async def cap_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     match["captain_A"] = match["team_A"][player_num - 1]
-    await update.message.reply_text(f"Captain for Team A set to {match['captain_A']['name']}.\nAssign Team B captain with /cap_B <player_number>.")
+    await update.message.reply_text(f"Captain for Team A set to {match['captain_A']['name']} (@{match['captain_A']['username']}).\nAssign Team B captain with /cap_B <player_number>.")
 
 async def cap_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -413,7 +396,7 @@ async def cap_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     match["captain_B"] = match["team_B"][player_num - 1]
-    await update.message.reply_text(f"Captain for Team B set to {match['captain_B']['name']}.\nSet overs with /setovers <number>.")
+    await update.message.reply_text(f"Captain for Team B set to {match['captain_B']['name']} (@{match['captain_B']['username']}).\nSet overs with /setovers <number>.")
 
 async def setovers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -472,33 +455,128 @@ async def startmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     match["state"] = "toss"
     await update.message.reply_text(
         "✅ Match setup complete!\n\n"
-        "Host:\n"
-        "• Use /toss <A|B> <A|B> to set which team bats/bowls first (e.g. /toss A B)\n"
-        "• Then assign batsmen with /bat <striker_num> <non_striker_num>\n"
-        "• Assign bowler with /bowl <bowler_num>\n"
-        "• Use /help for step-by-step instructions."
+        "Host: Use /toss to start the toss."
     )
+
+# --- Interactive Toss Flow ---
 
 async def toss_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
-    args = context.args
+
     if chat.id not in MATCHES:
         await update.message.reply_text("No ongoing match.")
         return
     match = MATCHES[chat.id]
     if user.id != match["host_id"]:
-        await update.message.reply_text("Only host can set batting/bowling team.")
+        await update.message.reply_text("Only the host can start the toss.")
         return
-    if len(args) != 2 or args[0].upper() not in ("A", "B") or args[1].upper() not in ("A", "B") or args[0].upper() == args[1].upper():
-        await update.message.reply_text("Usage: /toss <A|B> <A|B> (batting_team bowling_team, must be different)")
+    if not match["captain_A"] or not match["captain_B"]:
+        await update.message.reply_text("Assign both captains before toss.")
         return
-    match["batting_team"] = args[0].upper()
-    match["bowling_team"] = args[1].upper()
+
+    match["toss"]["state"] = "waiting_heads_tails"
+    capA = match["captain_A"]
+    keyboard = [
+        [
+            InlineKeyboardButton("Heads", callback_data="toss_heads"),
+            InlineKeyboardButton("Tails", callback_data="toss_tails"),
+        ]
+    ]
     await update.message.reply_text(
-        f"Batting: Team {match['batting_team']}\n"
-        f"Bowling: Team {match['bowling_team']}\n"
-        f"Assign batsmen with /bat <striker_num> <non_striker_num> and bowler with /bowl <bowler_num>."
+        f"Toss time!\n\n{mention_player(capA)} (Team A captain), choose Heads or Tails:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+async def toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    chat_id = query.message.chat.id
+    user_id = query.from_user.id
+
+    if chat_id not in MATCHES:
+        await query.answer("No ongoing match.")
+        return
+    match = MATCHES[chat_id]
+    if match["toss"]["state"] != "waiting_heads_tails":
+        await query.answer("Toss is not active.")
+        return
+
+    capA = match["captain_A"]
+    capB = match["captain_B"]
+    if user_id != capA["user_id"]:
+        await query.answer("Only Team A captain can pick heads or tails.")
+        return
+
+    # Save Team A's call
+    choice = "Heads" if query.data == "toss_heads" else "Tails"
+    match["toss"]["choice"] = choice
+    match["toss"]["state"] = "toss_result"
+
+    # Do the toss
+    toss_result = random.choice(["Heads", "Tails"])
+    winner = capA if toss_result == choice else capB
+    match["toss"]["winner"] = winner
+    match["toss"]["toss_result"] = toss_result
+
+    await query.edit_message_text(
+        f"Toss result: *{toss_result}*!\n\n"
+        f"{mention_player(winner)} won the toss.",
+        parse_mode="Markdown"
+    )
+
+    # Winner chooses bat or bowl
+    keyboard = [
+        [
+            InlineKeyboardButton("Bat", callback_data="toss_bat"),
+            InlineKeyboardButton("Bowl", callback_data="toss_bowl"),
+        ]
+    ]
+    match["toss"]["state"] = "waiting_batbowl"
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"{mention_player(winner)}, choose Bat or Bowl:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+async def toss_batbowl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    chat_id = query.message.chat.id
+    user_id = query.from_user.id
+
+    if chat_id not in MATCHES:
+        await query.answer("No ongoing match.")
+        return
+    match = MATCHES[chat_id]
+    if match["toss"]["state"] != "waiting_batbowl":
+        await query.answer("Not time to pick bat/bowl.")
+        return
+
+    winner = match["toss"]["winner"]
+    loser = match["captain_A"] if winner["user_id"] != match["captain_A"]["user_id"] else match["captain_B"]
+
+    if user_id != winner["user_id"]:
+        await query.answer("Only toss winner can pick Bat/Bowl.")
+        return
+
+    pick = "bat" if query.data == "toss_bat" else "bowl"
+    match["toss"]["batbowl"] = pick
+
+    if pick == "bat":
+        match["batting_team"] = "A" if winner == match["captain_A"] else "B"
+        match["bowling_team"] = "B" if winner == match["captain_A"] else "A"
+    else:
+        match["bowling_team"] = "A" if winner == match["captain_A"] else "B"
+        match["batting_team"] = "B" if winner == match["captain_A"] else "A"
+
+    match["toss"]["state"] = None
+
+    await query.edit_message_text(
+        f"{mention_player(winner)} chose to *{pick.upper()}* first!\n\n"
+        f"Batting: Team {match['batting_team']}\nBowling: Team {match['bowling_team']}\n\n"
+        f"Host: Assign batsmen with /bat <striker_num> <non_striker_num> and bowler with /bowl <bowler_num>.",
+        parse_mode="Markdown"
     )
 # --- Batting, Bowling, and Ball-by-Ball Play ---
 
@@ -520,7 +598,7 @@ async def bat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not match.get("batting_team"):
-        await update.message.reply_text("Host: Please set 'batting_team' and 'bowling_team' with /toss before assigning batsmen.")
+        await update.message.reply_text("Host: Complete the toss first!")
         return
 
     striker_num, non_striker_num = map(int, args)
@@ -572,7 +650,7 @@ async def bowl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not match.get("bowling_team"):
-        await update.message.reply_text("Host: Please set 'batting_team' and 'bowling_team' with /toss before assigning bowler.")
+        await update.message.reply_text("Host: Complete the toss first!")
         return
 
     bowling_team_key = match["bowling_team"]
@@ -734,7 +812,7 @@ async def score_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Team A: {a}/{wa}\nTeam B: {b}/{wb}\n"
         f"Overs: {balls//6}.{balls%6} / {overs}\n"
         f"Currently Batting: Team {batting}"
-        )
+    )
 # --- Admin, Innings, and End Commands ---
 
 async def bonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -900,7 +978,9 @@ def register_handlers(application):
     application.add_handler(CommandHandler("endmatch", endmatch_command))
     # Ball-by-ball play (text)
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), process_ball))
-    # Callback for innings swap
+    # Callback for toss and innings swap
+    application.add_handler(CallbackQueryHandler(toss_callback, pattern="^toss_(heads|tails)$"))
+    application.add_handler(CallbackQueryHandler(toss_batbowl_callback, pattern="^toss_(bat|bowl)$"))
     application.add_handler(CallbackQueryHandler(inningswap_callback, pattern="^inningswap_"))
 
 async def on_startup(application):
