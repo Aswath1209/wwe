@@ -1,15 +1,17 @@
 import logging
 import random
 import asyncio
-from datetime import datetime, timedelta
 from io import BytesIO
+from datetime import datetime
 
 from PIL import Image, ImageDraw, ImageFont
 
-import nest_asyncio
-nest_asyncio.apply()
-
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton, InputFile
+from telegram import (
+    Update,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    InputFile,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -19,30 +21,55 @@ from telegram.ext import (
     ContextTypes,
 )
 
+import nest_asyncio
+nest_asyncio.apply()
+
 from motor.motor_asyncio import AsyncIOMotorClient
 
+# --- Config ---
+TOKEN = "8156231369:AAHDFvjD9Aur9y5QjB5YWzvCQp7bUdLuuEc"
+MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"
+ADMIN_IDS = {123456789}  # Replace with your Telegram ID(s)
+COINS_EMOJI = "🪙"
+
+# --- Logging ---
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
-# === CONFIG ===
-TOKEN = "8156231369:AAHDFvjD9Aur9y5QjB5YWzvCQp7bUdLuuEc"
-ADMIN_IDS = {123456789}  # Replace with your admin IDs
-MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"
-
-# === DATABASE SETUP ===
+# --- Database ---
 mongo_client = AsyncIOMotorClient(MONGO_URL)
-db = mongo_client.handcricket_unified
+db = mongo_client.ccl_handcricket
 users_collection = db.users
 
-# === GLOBAL DATA STRUCTURES ===
-USERS = {}
-CCL_GROUP_MATCHES = {}
-COINS_EMOJI = "🪙"
+# --- Global Data ---
+USERS = {}  # user_id -> user dict
+MATCHES = {}  # chat_id -> match dict
 
-# === USER MANAGEMENT ===
+# --- Allowed inputs ---
+ALLOWED_BATSMAN_RUNS = {0, 1, 2, 3, 4, 6}
+BOWLER_VARIATIONS_MAP = {
+    "rs": 0,
+    "bouncer": 1,
+    "yorker": 2,
+    "short": 3,
+    "slower": 4,
+    "knuckle": 6,
+}
+ALLOWED_BOWLER_VARIATIONS = set(BOWLER_VARIATIONS_MAP.keys())
+
+# --- Commentary GIF placeholders ---
+GIFS = {
+    0: "https://media.giphy.com/media/3o6Zt481isNVuQI1l6/giphy.gif",  # dot ball
+    4: "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",  # four runs
+    6: "https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif",  # six runs
+    "half_century": "https://media.giphy.com/media/3o6Zt6ML6BklcajjsA/giphy.gif",
+    "century": "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
+}
+
+# --- Helpers ---
 def get_username(user):
     return user.first_name or user.username or "Player"
 
@@ -57,6 +84,8 @@ def ensure_user(user):
             "ties": 0,
             "registered": False,
             "last_daily": None,
+            "runs_scored": 0,
+            "balls_faced": 0,
         }
 
 async def save_user(user_id):
@@ -82,16 +111,16 @@ async def load_users():
     except Exception as e:
         logger.error(f"Error loading users: {e}", exc_info=True)
 
-# === SCOREBOARD IMAGE TEMPLATE ===
+# --- Scoreboard Template ---
 def create_scoreboard_template(width=800, height=400):
     img = Image.new("RGB", (width, height), color="white")
     draw = ImageDraw.Draw(img)
 
-    # Header and footer
+    # Header/Footer bars
     draw.rectangle([(0, 0), (width, 60)], fill="#003366")
     draw.rectangle([(0, height - 40), (width, height)], fill="#003366")
 
-    # Dividers
+    # Dividing lines
     draw.line([(width//2, 60), (width//2, height - 40)], fill="black", width=2)
     draw.line([(0, 120), (width, 120)], fill="black", width=2)
 
@@ -110,24 +139,16 @@ def create_scoreboard_template(width=800, height=400):
 
     return img, draw, font_subheader
 
-# === LMS (Last Man Standing) RULE ===
-def is_lms_scenario(match):
-    total_players = len(match["team_A"])
-    if total_players != 8:
-        return False
-    batting_key = match["batting_team"]
-    wickets = match["wickets"][batting_key]
-    return wickets == 7  # 7 wickets down means last man bats alone
-
-# === BASIC COMMANDS ===
+# --- Basic Commands ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user(user)
     await save_user(user.id)
     await update.message.reply_text(
-        f"Welcome to Unified CCL HandCricket Bot, {USERS[user.id]['name']}! Use /register to get 4000 {COINS_EMOJI}.",
-        parse_mode="Markdown",
+        f"Welcome to Unified CCL HandCricket Bot, {USERS[user.id]['name']}!\n"
+        f"Use /register to get 4000 {COINS_EMOJI} and start playing.\n"
+        f"Use /help for command list."
     )
 
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -135,12 +156,12 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(user)
     u = USERS[user.id]
     if u["registered"]:
-        await update.message.reply_text("You have already registered.", parse_mode="Markdown")
+        await update.message.reply_text("You have already registered.")
         return
     u["coins"] += 4000
     u["registered"] = True
     await save_user(user.id)
-    await update.message.reply_text(f"Registered! You received 4000 {COINS_EMOJI}.", parse_mode="Markdown")
+    await update.message.reply_text(f"Registered! You received 4000 {COINS_EMOJI}.")
 
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -155,40 +176,94 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Wins: {u['wins']}\n"
         f"Losses: {u['losses']}\n"
         f"Ties: {u['ties']}\n"
+        f"Runs Scored: {u.get('runs_scored', 0)}\n"
+        f"Balls Faced: {u.get('balls_faced', 0)}\n"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
-# Helper function to format team display
-def format_team(team_name, players, captain_index=None):
-    text = f"**{team_name}**\n"
-    if not players:
-        text += "_No players added yet._\n"
-        return text
-    for i, player in enumerate(players, 1):
-        cap_mark = " (c)" if captain_index == i else ""
-        text += f"{i}) {player['name']}{cap_mark}\n"
-    return text
 
-# /cclgroup command - Host starts a new group match
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    help_text = (
+        "🏏 *CCL HandCricket Bot Commands*\n\n"
+        "/start - Welcome message\n"
+        "/register - Register and get starting coins\n"
+        "/profile - View your profile\n"
+        "/cclgroup - Host: Start a new group match\n"
+        "/add_A @username - Host: Add player to Team A\n"
+        "/add_B @username - Host: Add player to Team B\n"
+        "/teams - Show current teams\n"
+        "/cap_A <player_number> - Host: Assign captain for Team A\n"
+        "/cap_B <player_number> - Host: Assign captain for Team B\n"
+        "/setovers <number> - Host: Set overs (1-20)\n"
+        "/startmatch - Host: Start the match after setup\n"
+        "/bat <striker_num> <non_striker_num> - Host: Assign batsmen\n"
+        "/bowl <bowler_num> - Host: Assign bowler for current over (no consecutive overs)\n"
+        "/runs <runs> - Host: Add runs scored on ball (allowed: 0,1,2,3,4,6)\n"
+        "/wicket - Host: Record wicket fallen\n"
+        "/score - Show current score\n"
+        "/bonus <A|B> <runs> - Host: Add bonus runs\n"
+        "/penalty <A|B> <runs> - Host: Deduct penalty runs\n"
+        "/inningswap - Host: Swap innings (confirmation required)\n"
+        "/endmatch - Host: End the match and show result\n\n"
+        "Instructions:\n"
+        "- Host: Use /cclgroup to create match, add players with /add_A or /add_B anytime.\n"
+        "- Assign captains with /cap_A and /cap_B.\n"
+        "- Set overs with /setovers.\n"
+        "- Start match with /startmatch.\n"
+        "- Host chooses striker and non-striker at innings start and after wickets.\n"
+        "- Batsman sends runs (0,1,2,3,4,6) in DM; bowler sends variation (rs, bouncer, yorker, short, slower, knuckle).\n"
+        "- If batsman sends 0 and bowler sends rs(0), batsman is out.\n"
+        "- Strike changes on odd runs except last ball of over (see rules).\n"
+        "- Host assigns bowler each over (no consecutive overs by same bowler).\n"
+        "- Commentary and GIFs sent for key events.\n"
+        "- Host can add players anytime even mid-match.\n"
+        "- If all batsmen out, host must swap innings.\n"
+        "- Host can manually swap innings anytime with confirmation.\n"
+    )
+    await update.message.reply_text(help_text, parse_mode="Markdown")
+
+# --- Load users on startup ---
+async def on_startup(application):
+    await load_users()
+    logger.info("Bot started and users loaded.")
+
+# --- Main ---
+async def main():
+    application = ApplicationBuilder().token(TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("register", register))
+    application.add_handler(CommandHandler("profile", profile))
+    application.add_handler(CommandHandler("help", help_command))
+
+    # Other handlers for match setup and play will be added in next parts
+
+    application.post_init = on_startup
+
+    logger.info("Starting bot...")
+    await application.run_polling()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
+from telegram.constants import ParseMode
+
 async def cclgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
+    ensure_user(user)
 
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("❌ This command can only be used in groups.")
+    if chat.id in MATCHES:
+        await update.message.reply_text("A match is already ongoing in this chat. Use /endmatch to finish it first.")
         return
 
-    if chat.id in CCL_GROUP_MATCHES:
-        await update.message.reply_text("A CCL group match is already ongoing in this group.")
-        return
-
-    match_data = {
+    MATCHES[chat.id] = {
         "host_id": user.id,
         "team_A": [],
         "team_B": [],
-        "team_A_name": "Team A",
-        "team_B_name": "Team B",
         "captain_A": None,
         "captain_B": None,
+        "team_A_name": "Team A",
+        "team_B_name": "Team B",
         "overs": None,
         "state": "setup",
         "batting_team": None,
@@ -199,27 +274,29 @@ async def cclgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "striker": None,
         "non_striker": None,
         "current_bowler": None,
+        "last_bowler": None,
         "innings": 1,
+        "players_out": {"A": [], "B": []},
     }
 
-    CCL_GROUP_MATCHES[chat.id] = match_data
     await update.message.reply_text(
-        f"🏏 CCL Group match initiated by {USERS[user.id]['name']}.\n"
-        "Host can add players with /add_A @username or /add_B @username.\n"
-        "Use /teams to see current teams."
+        f"Group match created by {user.first_name}.\n"
+        "Host, add players with /add_A @username or /add_B @username.\n"
+        "When teams are ready, assign captains with /cap_A <player_number> and /cap_B <player_number>.\n"
+        "Set overs with /setovers <number> (1-20).\n"
+        "Start match with /startmatch."
     )
 
-# /add_A command - add player to Team A
 async def add_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     args = context.args
 
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match in this chat. Use /cclgroup to start.")
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat. Use /cclgroup to create one.")
         return
 
-    match = CCL_GROUP_MATCHES[chat.id]
+    match = MATCHES[chat.id]
     if user.id != match["host_id"]:
         await update.message.reply_text("Only the host can add players.")
         return
@@ -228,39 +305,42 @@ async def add_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /add_A @username")
         return
 
-    username = args[0].lstrip("@").lower()
-
+    username = args[0].lstrip("@")
     player = None
     for u in USERS.values():
-        if u["name"].lower() == username:
+        if u["name"].lower() == username.lower():
             player = u
             break
 
     if not player:
-        await update.message.reply_text(f"User {args[0]} not found or not registered.")
+        await update.message.reply_text(f"User @{username} not found or not registered.")
         return
 
-    if any(p["user_id"] == player["user_id"] for p in match["team_A"]):
-        await update.message.reply_text(f"{player['name']} is already in Team A.")
+    if player in match["team_A"] or player in match["team_B"]:
+        await update.message.reply_text(f"{player['name']} is already in a team.")
         return
-    if any(p["user_id"] == player["user_id"] for p in match["team_B"]):
-        await update.message.reply_text(f"{player['name']} is already in Team B.")
+
+    if len(match["team_A"]) >= 8:
+        await update.message.reply_text("Team A already has 8 players.")
         return
 
     match["team_A"].append(player)
-    await update.message.reply_text(f"{player['name']} added to Team A.")
+    await update.message.reply_text(
+        f"Added {player['name']} to Team A.\n"
+        f"Team A now has {len(match['team_A'])} players.\n"
+        f"Host: Add more players or assign captain with /cap_A <player_number>."
+    )
 
-# /add_B command - add player to Team B
 async def add_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     args = context.args
 
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match in this chat. Use /cclgroup to start.")
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat. Use /cclgroup to create one.")
         return
 
-    match = CCL_GROUP_MATCHES[chat.id]
+    match = MATCHES[chat.id]
     if user.id != match["host_id"]:
         await update.message.reply_text("Only the host can add players.")
         return
@@ -269,56 +349,65 @@ async def add_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /add_B @username")
         return
 
-    username = args[0].lstrip("@").lower()
-
+    username = args[0].lstrip("@")
     player = None
     for u in USERS.values():
-        if u["name"].lower() == username:
+        if u["name"].lower() == username.lower():
             player = u
             break
 
     if not player:
-        await update.message.reply_text(f"User {args[0]} not found or not registered.")
+        await update.message.reply_text(f"User @{username} not found or not registered.")
         return
 
-    if any(p["user_id"] == player["user_id"] for p in match["team_B"]):
-        await update.message.reply_text(f"{player['name']} is already in Team B.")
+    if player in match["team_A"] or player in match["team_B"]:
+        await update.message.reply_text(f"{player['name']} is already in a team.")
         return
-    if any(p["user_id"] == player["user_id"] for p in match["team_A"]):
-        await update.message.reply_text(f"{player['name']} is already in Team A.")
+
+    if len(match["team_B"]) >= 8:
+        await update.message.reply_text("Team B already has 8 players.")
         return
 
     match["team_B"].append(player)
-    await update.message.reply_text(f"{player['name']} added to Team B.")
+    await update.message.reply_text(
+        f"Added {player['name']} to Team B.\n"
+        f"Team B now has {len(match['team_B'])} players.\n"
+        f"Host: Add more players or assign captain with /cap_B <player_number>."
+    )
 
-# /teams command - show current teams
 async def teams_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match in this chat.")
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat.")
         return
 
-    match = CCL_GROUP_MATCHES[chat.id]
+    match = MATCHES[chat.id]
+    text = f"Teams for current match:\n\n*Team A*:\n"
+    if match["team_A"]:
+        for i, p in enumerate(match["team_A"], start=1):
+            text += f"{i}. {p['name']}\n"
+    else:
+        text += "No players added yet.\n"
 
-    text = ""
-    text += format_team(match["team_A_name"], match["team_A"], match.get("captain_A"))
-    text += "\n"
-    text += format_team(match["team_B_name"], match["team_B"], match.get("captain_B"))
+    text += f"\n*Team B*:\n"
+    if match["team_B"]:
+        for i, p in enumerate(match["team_B"], start=1):
+            text += f"{i}. {p['name']}\n"
+    else:
+        text += "No players added yet.\n"
 
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
 
-# /cap_A command - assign captain for Team A
 async def cap_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     args = context.args
 
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match in this chat.")
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat.")
         return
 
-    match = CCL_GROUP_MATCHES[chat.id]
+    match = MATCHES[chat.id]
     if user.id != match["host_id"]:
         await update.message.reply_text("Only the host can assign captains.")
         return
@@ -327,26 +416,24 @@ async def cap_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /cap_A <player_number>")
         return
 
-    num = int(args[0])
-    if num < 1 or num > len(match["team_A"]):
+    player_num = int(args[0])
+    if player_num < 1 or player_num > len(match["team_A"]):
         await update.message.reply_text("Invalid player number for Team A.")
         return
 
-    match["captain_A"] = num
-    player = match["team_A"][num - 1]
-    await update.message.reply_text(f"{player['name']} is now captain of Team A.")
+    match["captain_A"] = match["team_A"][player_num - 1]
+    await update.message.reply_text(f"Captain for Team A set to {match['captain_A']['name']}.")
 
-# /cap_B command - assign captain for Team B
 async def cap_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     args = context.args
 
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match in this chat.")
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat.")
         return
 
-    match = CCL_GROUP_MATCHES[chat.id]
+    match = MATCHES[chat.id]
     if user.id != match["host_id"]:
         await update.message.reply_text("Only the host can assign captains.")
         return
@@ -355,679 +442,557 @@ async def cap_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /cap_B <player_number>")
         return
 
-    num = int(args[0])
-    if num < 1 or num > len(match["team_B"]):
+    player_num = int(args[0])
+    if player_num < 1 or player_num > len(match["team_B"]):
         await update.message.reply_text("Invalid player number for Team B.")
         return
 
-    match["captain_B"] = num
-    player = match["team_B"][num - 1]
-    await update.message.reply_text(f"{player['name']} is now captain of Team B.")
+    match["captain_B"] = match["team_B"][player_num - 1]
+    await update.message.reply_text(f"Captain for Team B set to {match['captain_B']['name']}.")
 
-# /setovers command - host sets overs with inline buttons (1-20)
-async def set_overs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def setovers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
+    args = context.args
 
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match in this chat.")
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat.")
         return
 
-    match = CCL_GROUP_MATCHES[chat.id]
+    match = MATCHES[chat.id]
     if user.id != match["host_id"]:
         await update.message.reply_text("Only the host can set overs.")
         return
 
-    buttons = []
-    for i in range(1, 21):
-        buttons.append(InlineKeyboardButton(str(i), callback_data=f"setovers_{i}"))
-
-    keyboard = [buttons[i:i+4] for i in range(0, 20, 4)]
-    await update.message.reply_text("Select number of overs:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-# Callback handler for overs selection
-async def set_overs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = query.from_user
-    chat = query.message.chat
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await query.answer("No ongoing match.")
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Usage: /setovers <number_of_overs>")
         return
 
-    match = CCL_GROUP_MATCHES[chat.id]
-    if user.id != match["host_id"]:
-        await query.answer("Only host can set overs.")
+    overs = int(args[0])
+    if overs < 1 or overs > 20:
+        await update.message.reply_text("Overs must be between 1 and 20.")
         return
 
-    _, overs_str = query.data.split("_")
-    overs = int(overs_str)
     match["overs"] = overs
-    match["state"] = "overs_set"
+    await update.message.reply_text(f"Overs set to {overs}.")
 
-    await query.message.edit_text(f"Overs set to {overs}. Use /startmatch to begin the match.")
-    await query.answer()
-# /startmatch command - starts the match after setup is complete
 async def startmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
 
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match in this chat.")
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat.")
         return
 
-    match = CCL_GROUP_MATCHES[chat.id]
-
+    match = MATCHES[chat.id]
     if user.id != match["host_id"]:
         await update.message.reply_text("Only the host can start the match.")
         return
 
-    if match["state"] != "overs_set":
-        await update.message.reply_text("Please complete setup before starting the match (assign captains and set overs).")
+    # Validate teams and overs
+    if len(match["team_A"]) < 1 or len(match["team_B"]) < 1:
+        await update.message.reply_text("Both teams must have at least 1 player.")
         return
 
-    if not match["captain_A"] or not match["captain_B"]:
-        await update.message.reply_text("Both teams must have captains assigned before starting.")
+    if match["captain_A"] is None or match["captain_B"] is None:
+        await update.message.reply_text("Captains must be assigned for both teams.")
         return
 
-    # Send DM to captains to ask for team names
-    captain_A = match["team_A"][match["captain_A"] - 1]
-    captain_B = match["team_B"][match["captain_B"] - 1]
-
-    try:
-        await context.bot.send_message(
-            chat_id=captain_A["user_id"],
-            text="You are the captain of Team A. Please reply with your team name."
-        )
-        await context.bot.send_message(
-            chat_id=captain_B["user_id"],
-            text="You are the captain of Team B. Please reply with your team name."
-        )
-    except Exception:
-        await update.message.reply_text("Failed to send DM to captains. Make sure they have started a chat with the bot.")
+    if match["overs"] is None:
+        await update.message.reply_text("Overs must be set before starting the match.")
         return
 
-    match["state"] = "awaiting_team_names"
-    await update.message.reply_text("Match started! Waiting for captains to send their team names in DM.")
-
-# Handler for captains sending team names in DM
-async def dm_team_name_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    text = update.message.text.strip()
-
-    found_match = None
-    for match in CCL_GROUP_MATCHES.values():
-        if match["state"] == "awaiting_team_names":
-            captain_A = match["team_A"][match["captain_A"] - 1]
-            captain_B = match["team_B"][match["captain_B"] - 1]
-            if user.id == captain_A["user_id"]:
-                match["team_A_name"] = text
-                found_match = match
-            elif user.id == captain_B["user_id"]:
-                match["team_B_name"] = text
-                found_match = match
-
-    if not found_match:
-        await update.message.reply_text("You are not currently expected to send a team name.")
-        return
-
-    if found_match["team_A_name"] and found_match["team_B_name"]:
-        found_match["state"] = "toss"
-        chat_id = None
-        for c_id, m in CCL_GROUP_MATCHES.items():
-            if m == found_match:
-                chat_id = c_id
-                break
-        if chat_id:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=(
-                    f"Team names set:\n"
-                    f"Team A: {found_match['team_A_name']}\n"
-                    f"Team B: {found_match['team_B_name']}\n\n"
-                    f"{found_match['team_A_name']} captain, please choose Heads or Tails for the toss."
-                ),
-                reply_markup=InlineKeyboardMarkup([
-                    [
-                        InlineKeyboardButton("Heads", callback_data="toss_heads"),
-                        InlineKeyboardButton("Tails", callback_data="toss_tails"),
-                    ]
-                ])
-            )
-        await update.message.reply_text("Team name received. Toss will begin shortly.")
-
-# Toss callback handler
-async def toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = query.from_user
-    chat = query.message.chat
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await query.answer("No ongoing match here.")
-        return
-
-    match = CCL_GROUP_MATCHES[chat.id]
-    if match["state"] != "toss":
-        await query.answer("Toss not in progress.")
-        return
-
-    captain_A = match["team_A"][match["captain_A"] - 1]
-    if user.id != captain_A["user_id"]:
-        await query.answer("Only Team A captain can choose toss.")
-        return
-
-    toss_choice = query.data.split("_")[1]  # heads or tails
-    toss_result = random.choice(["heads", "tails"])
-
-    if toss_choice == toss_result:
-        match["toss_winner"] = "A"
-        match["toss_loser"] = "B"
-    else:
-        match["toss_winner"] = "B"
-        match["toss_loser"] = "A"
-
-    match["state"] = "toss_winner_choice"
-
-    await query.message.edit_text(
-        f"The coin landed on {toss_result.capitalize()}!\n"
-        f"{match['team_A_name'] if match['toss_winner']=='A' else match['team_B_name']} won the toss.\n"
-        f"Captain, choose to Bat or Bowl first.",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("Bat 🏏", callback_data="tosswin_bat"),
-                InlineKeyboardButton("Bowl ⚾", callback_data="tosswin_bowl"),
-            ]
-        ])
-    )
-    await query.answer()
-
-# Toss winner chooses Bat or Bowl
-async def toss_winner_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    chat = query.message.chat
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await query.answer("No ongoing match here.")
-        return
-
-    match = CCL_GROUP_MATCHES[chat.id]
-    if match["state"] != "toss_winner_choice":
-        await query.answer("Not the right time to choose.")
-        return
-
-    choice = query.data.split("_")[1]  # bat or bowl
-
-    if match["toss_winner"] == "A":
-        if choice == "bat":
-            match["batting_team"] = "A"
-            match["bowling_team"] = "B"
-        else:
-            match["batting_team"] = "B"
-            match["bowling_team"] = "A"
-    else:
-        if choice == "bat":
-            match["batting_team"] = "B"
-            match["bowling_team"] = "A"
-        else:
-            match["batting_team"] = "A"
-            match["bowling_team"] = "B"
-
-    match["state"] = "in_progress"
-    match["innings"] = 1
-    match["score"] = {"A": 0, "B": 0}
-    match["wickets"] = {"A": 0, "B": 0}
-    match["balls"] = 0
-    match["striker"] = None
-    match["non_striker"] = None
-    match["current_bowler"] = None
-
-    await query.message.edit_text(
-        f"{match['team_A_name']} vs {match['team_B_name']} match has begun!\n"
-        f"{match['team_A_name'] if match['batting_team']=='A' else match['team_B_name']} batting first."
-    )
-    await query.answer()
-# Helper to rotate strike unless LMS scenario applies
-def rotate_strike(match):
-    if is_lms_scenario(match):
-        # No strike rotation in LMS scenario
-        return
-    match["striker"], match["non_striker"] = match["non_striker"], match["striker"]
-
-# /bat command - assign striker and non-striker by player numbers
-async def bat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-    args = context.args
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match here.")
-        return
-
-    match = CCL_GROUP_MATCHES[chat.id]
-
-    if user.id != match["host_id"]:
-        await update.message.reply_text("Only the host can assign batsmen.")
-        return
-
-    if len(args) < 2 or not all(arg.isdigit() for arg in args[:2]):
-        await update.message.reply_text("Usage: /bat <striker_number> <non_striker_number>")
-        return
-
-    striker_num, non_striker_num = map(int, args[:2])
-    team_key = match["batting_team"]
-    team = match["team_A"] if team_key == "A" else match["team_B"]
-
-    if not (1 <= striker_num <= len(team)) or not (1 <= non_striker_num <= len(team)):
-        await update.message.reply_text("Invalid player numbers.")
-        return
-
-    if striker_num == non_striker_num:
-        await update.message.reply_text("Striker and non-striker cannot be the same player.")
-        return
-
-    match["striker"] = striker_num - 1
-    match["non_striker"] = non_striker_num - 1
-
+    match["state"] = "toss"
+    # Notify host and captains
     await update.message.reply_text(
-        f"Striker: {team[match['striker']]['name']}\n"
-        f"Non-Striker: {team[match['non_striker']]['name']}"
+        f"Match setup complete!\n"
+        f"Host: Conduct the toss by messaging the captains privately.\n"
+        f"Captains: Please prepare for the toss and team decisions.\n"
+        f"Use /bat and /bowl commands after toss to assign players."
     )
 
-# /bowl command - assign current bowler by player number
-async def bowl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-    args = context.args
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match here.")
-        return
-
-    match = CCL_GROUP_MATCHES[chat.id]
-
-    if user.id != match["host_id"]:
-        await update.message.reply_text("Only the host can assign the bowler.")
-        return
-
-    if not args or not args[0].isdigit():
-        await update.message.reply_text("Usage: /bowl <player_number>")
-        return
-
-    bowler_num = int(args[0])
-    team_key = match["bowling_team"]
-    team = match["team_A"] if team_key == "A" else match["team_B"]
-
-    if not (1 <= bowler_num <= len(team)):
-        await update.message.reply_text("Invalid player number.")
-        return
-
-    match["current_bowler"] = bowler_num - 1
-    await update.message.reply_text(f"Current bowler: {team[match['current_bowler']]['name']}")
-
-# /runs command - add runs for the current ball and handle strike rotation and LMS rule
-async def runs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-    args = context.args
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match here.")
-        return
-
-    match = CCL_GROUP_MATCHES[chat.id]
-
-    if user.id != match["host_id"]:
-        await update.message.reply_text("Only the host can add runs.")
-        return
-
-    if not args or not args[0].isdigit():
-        await update.message.reply_text("Usage: /runs <number_of_runs>")
-        return
-
-    runs = int(args[0])
-    if runs < 0:
-        await update.message.reply_text("Runs cannot be negative.")
-        return
-
-    batting_key = match["batting_team"]
-    batting_team = match["team_A"] if batting_key == "A" else match["team_B"]
-
-    if match["striker"] is None or match["non_striker"] is None:
-        await update.message.reply_text("Please assign batsmen first using /bat command.")
-        return
-
-    # Update score
-    match["score"][batting_key] += runs
-
-    # Update balls
-    match["balls"] += 1
-
-    # Rotate strike if runs is odd and not LMS
-    if runs % 2 == 1 and not is_lms_scenario(match):
-        rotate_strike(match)
-
-    # Rotate strike at end of over (6 balls) if not LMS
-    if match["balls"] % 6 == 0 and not is_lms_scenario(match):
-        rotate_strike(match)
-
-    # Generate and send scoreboard image
-    await send_scoreboard_image(update, context, match)
-
-# /wicket command - record wicket and handle LMS scenario
-async def wicket_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match here.")
-        return
-
-    match = CCL_GROUP_MATCHES[chat.id]
-
-    if user.id != match["host_id"]:
-        await update.message.reply_text("Only the host can record wickets.")
-        return
-
-    batting_key = match["batting_team"]
-    match["wickets"][batting_key] += 1
-    match["balls"] += 1
-
-    # If LMS scenario reached, no strike rotation on wicket
-    if is_lms_scenario(match):
-        # LMS batsman continues alone, no strike change
-        pass
-    else:
-        # Normal wicket: new batsman to be assigned with /bat command
-        # Reset striker to None to force assignment
-        match["striker"] = None
-
-    await update.message.reply_text(
-        f"Wicket fallen!\n"
-        f"Score: {match['score'][batting_key]}/{match['wickets'][batting_key]}\n"
-        f"Overs: {match['balls'] // 6}.{match['balls'] % 6}\n"
-        "Assign new batsman using /bat command."
-    )
-
-    # Send updated scoreboard image
-    await send_scoreboard_image(update, context, match)
-
-# Function to generate and send scoreboard image
-async def send_scoreboard_image(update: Update, context: ContextTypes.DEFAULT_TYPE, match):
-    img, draw, font = create_scoreboard_template()
-    width, height = img.size
-
-    # Draw dynamic data
-    # Team names
-    draw.text((20, 90), match["team_A_name"], fill="black", font=font)
-    draw.text((width//2 + 20, 90), match["team_B_name"], fill="black", font=font)
-
-    # Scores and wickets
-    draw.text((20, 140), f"Score: {match['score']['A']}/{match['wickets']['A']}", fill="black", font=font)
-    draw.text((width//2 + 20, 140), f"Score: {match['score']['B']}/{match['wickets']['B']}", fill="black", font=font)
-
-    # Overs
-    overs_balls = match["balls"]
-    overs = overs_balls // 6
-    balls = overs_balls % 6
-    draw.text((20, 180), f"Overs: {overs}.{balls}", fill="black", font=font)
-    draw.text((width//2 + 20, 180), f"Overs: N/A", fill="black", font=font)  # Bowling team overs can be added
-
-    # Innings
-    draw.text((20, height - 35), f"Innings: {match['innings']}", fill="white", font=font)
-
-    # Striker and non-striker
-    batting_key = match["batting_team"]
-    batting_team = match["team_A"] if batting_key == "A" else match["team_B"]
-
-    striker_name = batting_team[match["striker"]]["name"] if match["striker"] is not None else "N/A"
-    non_striker_name = batting_team[match["non_striker"]]["name"] if match["non_striker"] is not None else "N/A"
-
-    draw.text((20, 220), f"Striker: {striker_name}", fill="black", font=font)
-    draw.text((20, 260), f"Non-Striker: {non_striker_name}", fill="black", font=font)
-
-    # Current bowler
-    bowling_key = match["bowling_team"]
-    bowling_team = match["team_A"] if bowling_key == "A" else match["team_B"]
-    bowler_name = bowling_team[match["current_bowler"]]["name"] if match["current_bowler"] is not None else "N/A"
-    draw.text((width//2 + 20, 220), f"Bowler: {bowler_name}", fill="black", font=font)
-
-    # Save image to bytes
-    bio = BytesIO()
-    bio.name = "scoreboard.png"
-    img.save(bio, "PNG")
-    bio.seek(0)
-
-    # Send photo
-    await update.message.reply_photo(photo=InputFile(bio), caption="Current Scoreboard")
-
-# /score command - show current score summary (text only)
-async def score_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match here.")
-        return
-
-    match = CCL_GROUP_MATCHES[chat.id]
-
-    def team_score_text(team_key):
-        team = match["team_A"] if team_key == "A" else match["team_B"]
-        score = match["score"][team_key]
-        wickets = match["wickets"][team_key]
-        balls = match["balls"] if match["batting_team"] == team_key else 0
-        overs = balls // 6
-        balls_left = balls % 6
-        return f"{match['team_A_name'] if team_key == 'A' else match['team_B_name']} - {score}/{wickets} in {overs}.{balls_left} overs"
-
-    text = (
-        f"🏏 Current Score:\n"
-        f"{team_score_text('A')}\n"
-        f"{team_score_text('B')}\n"
-        f"Innings: {match['innings']}\n"
-    )
-    await update.message.reply_text(text)
-# /bonus command - host adds bonus runs to a team
-async def bonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-    args = context.args
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match here.")
-        return
-
-    match = CCL_GROUP_MATCHES[chat.id]
-    if user.id != match["host_id"]:
-        await update.message.reply_text("Only the host can add bonus runs.")
-        return
-
-    if len(args) < 2 or args[0].upper() not in ["A", "B"] or not args[1].isdigit():
-        await update.message.reply_text("Usage: /bonus <A|B> <runs>")
-        return
-
-    team_key = args[0].upper()
-    runs = int(args[1])
-
-    match["score"][team_key] += runs
-    await update.message.reply_text(f"Added {runs} bonus runs to Team {team_key}.")
-
-# /penalty command - host subtracts runs from a team
-async def penalty_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-    args = context.args
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match here.")
-        return
-
-    match = CCL_GROUP_MATCHES[chat.id]
-    if user.id != match["host_id"]:
-        await update.message.reply_text("Only the host can apply penalties.")
-        return
-
-    if len(args) < 2 or args[0].upper() not in ["A", "B"] or not args[1].isdigit():
-        await update.message.reply_text("Usage: /penalty <A|B> <runs>")
-        return
-
-    team_key = args[0].upper()
-    runs = int(args[1])
-
-    match["score"][team_key] = max(0, match["score"][team_key] - runs)
-    await update.message.reply_text(f"Subtracted {runs} penalty runs from Team {team_key}.")
-
-# /endmatch command - host ends the match and declares result
-async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match here.")
-        return
-
-    match = CCL_GROUP_MATCHES[chat.id]
-    if user.id != match["host_id"]:
-        await update.message.reply_text("Only the host can end the match.")
-        return
-
-    score_A = match["score"]["A"]
-    wickets_A = match["wickets"]["A"]
-    score_B = match["score"]["B"]
-    wickets_B = match["wickets"]["B"]
-
-    if score_A > score_B:
-        result = f"{match['team_A_name']} won by {score_A - score_B} runs 🏆"
-    elif score_B > score_A:
-        wickets_left = 10 - wickets_B
-        result = f"{match['team_B_name']} won by {wickets_left} wicket{'s' if wickets_left != 1 else ''} 🏆"
-    else:
-        result = "Match tied 🤝"
-
-    def team_score_text(team_key):
-        team = match["team_A"] if team_key == "A" else match["team_B"]
-        score = match["score"][team_key]
-        wickets = match["wickets"][team_key]
-        overs = match["overs"] if match["overs"] else 0
-        return f"{match['team_A_name'] if team_key == 'A' else match['team_B_name']} - {score}/{wickets} in {overs} overs"
-
-    scoreboard = (
-        f"🏏 Match Ended!\n\n"
-        f"{team_score_text('A')}\n"
-        f"{team_score_text('B')}\n\n"
-        f"Result: {result}"
-    )
-
-    await update.message.reply_text(scoreboard)
-    del CCL_GROUP_MATCHES[chat.id]
-
-# Host change voting mechanism
-HOST_CHANGE_VOTES = {}
-
-async def changehost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match here.")
-        return
-
-    match = CCL_GROUP_MATCHES[chat.id]
-    if user.id == match["host_id"]:
-        await update.message.reply_text("You are already the host.")
-        return
-
-    voters = HOST_CHANGE_VOTES.setdefault(chat.id, set())
-    if user.id in voters:
-        await update.message.reply_text("You have already voted to change host.")
-        return
-
-    voters.add(user.id)
-    total_players = len(match["team_A"]) + len(match["team_B"])
-    votes_needed = total_players // 2 + 1
-
-    if len(voters) >= votes_needed:
-        HOST_CHANGE_VOTES.pop(chat.id, None)
-        match["host_id"] = user.id
-        await update.message.reply_text(f"Host changed to {USERS[user.id]['name']} by vote.")
-    else:
-        await update.message.reply_text(f"{len(voters)}/{votes_needed} votes to change host.")
-
-async def behost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat = update.effective_chat
-
-    if chat.id not in CCL_GROUP_MATCHES:
-        await update.message.reply_text("No ongoing CCL group match here.")
-        return
-
-    match = CCL_GROUP_MATCHES[chat.id]
-    if user.id == match["host_id"]:
-        await update.message.reply_text("You are already the host.")
-        return
-
-    await update.message.reply_text("You must first initiate a host change vote with /changehost.")
-
-# Unknown command handler
-async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Unknown command. Use /help to see available commands.")
-
-# Error handler
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error(msg="Exception while handling an update:", exc_info=context.error)
-async def main():
-    await load_users()
-
-    application = ApplicationBuilder().token(TOKEN).build()
-
-    # Basic commands
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("register", register))
-    application.add_handler(CommandHandler("profile", profile))
-
-    # Group match setup commands
+# Register handlers for Part 2 commands
+def register_part2_handlers(application):
     application.add_handler(CommandHandler("cclgroup", cclgroup_command))
     application.add_handler(CommandHandler("add_A", add_A_command))
     application.add_handler(CommandHandler("add_B", add_B_command))
     application.add_handler(CommandHandler("teams", teams_command))
     application.add_handler(CommandHandler("cap_A", cap_A_command))
     application.add_handler(CommandHandler("cap_B", cap_B_command))
-    application.add_handler(CommandHandler("setovers", set_overs_command))
-    application.add_handler(CallbackQueryHandler(set_overs_callback, pattern=r"^setovers_\d+$"))
-
-    # Match start and toss
+    application.add_handler(CommandHandler("setovers", setovers_command))
     application.add_handler(CommandHandler("startmatch", startmatch_command))
-    application.add_handler(CallbackQueryHandler(toss_callback, pattern=r"^toss_(heads|tails)$"))
-    application.add_handler(CallbackQueryHandler(toss_winner_choice_callback, pattern=r"^tosswin_(bat|bowl)$"))
+import re
+from telegram.constants import ParseMode
 
-    # Matchplay commands
+# Helper: get player display name with mention
+def mention_player(player):
+    return f"[{player['name']}](tg://user?id={player['user_id']})"
+
+# Command: Assign batsmen (striker and non-striker)
+async def bat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    args = context.args
+
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat.")
+        return
+    match = MATCHES[chat.id]
+
+    if user.id != match["host_id"]:
+        await update.message.reply_text("Only the host can assign batsmen.")
+        return
+
+    if len(args) != 2 or not all(arg.isdigit() for arg in args):
+        await update.message.reply_text("Usage: /bat <striker_num> <non_striker_num>")
+        return
+
+    striker_num, non_striker_num = map(int, args)
+    batting_team_key = match["batting_team"]
+    team = match["team_A"] if batting_team_key == "A" else match["team_B"]
+
+    if not (1 <= striker_num <= len(team)) or not (1 <= non_striker_num <= len(team)):
+        await update.message.reply_text("Player numbers out of range.")
+        return
+
+    if striker_num == non_striker_num:
+        await update.message.reply_text("Striker and non-striker cannot be the same player.")
+        return
+
+    # Check if players are out
+    if team[striker_num - 1] in match["players_out"][batting_team_key]:
+        await update.message.reply_text(f"{team[striker_num - 1]['name']} is out. Choose another striker.")
+        return
+    if team[non_striker_num - 1] in match["players_out"][batting_team_key]:
+        await update.message.reply_text(f"{team[non_striker_num - 1]['name']} is out. Choose another non-striker.")
+        return
+
+    match["striker"] = team[striker_num - 1]
+    match["non_striker"] = team[non_striker_num - 1]
+
+    await update.message.reply_text(
+        f"Batsmen assigned:\n"
+        f"Striker: {mention_player(match['striker'])}\n"
+        f"Non-Striker: {mention_player(match['non_striker'])}\n\n"
+        f"Captains and players, please send runs and bowling variations accordingly."
+        , parse_mode=ParseMode.MARKDOWN)
+
+# Command: Assign bowler for current over (no consecutive overs)
+async def bowl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    args = context.args
+
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat.")
+        return
+    match = MATCHES[chat.id]
+
+    if user.id != match["host_id"]:
+        await update.message.reply_text("Only the host can assign the bowler.")
+        return
+
+    if len(args) != 1 or not args[0].isdigit():
+        await update.message.reply_text("Usage: /bowl <bowler_num>")
+        return
+
+    bowling_team_key = "B" if match["batting_team"] == "A" else "A"
+    bowling_team = match["team_B"] if bowling_team_key == "B" else match["team_A"]
+
+    bowler_num = int(args[0])
+    if not (1 <= bowler_num <= len(bowling_team)):
+        await update.message.reply_text("Bowler number out of range.")
+        return
+
+    bowler = bowling_team[bowler_num - 1]
+    if match.get("last_bowler") and bowler["user_id"] == match["last_bowler"]["user_id"]:
+        await update.message.reply_text("This bowler bowled the last over. Choose a different bowler.")
+        return
+
+    match["current_bowler"] = bowler
+    await update.message.reply_text(f"Bowler for this over: {mention_player(bowler)}", parse_mode=ParseMode.MARKDOWN)
+
+# Helper: Process ball input (runs and bowling variation)
+async def process_ball(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    text = update.message.text.strip().lower()
+
+    # Find match where user is striker or bowler
+    match = None
+    for m in MATCHES.values():
+        if m.get("striker") and m["striker"]["user_id"] == user.id:
+            match = m
+            role = "batsman"
+            break
+        if m.get("current_bowler") and m["current_bowler"]["user_id"] == user.id:
+            match = m
+            role = "bowler"
+            break
+    if not match:
+        await update.message.reply_text("You are not currently assigned as striker or bowler in any match.")
+        return
+
+    if role == "batsman":
+        # Validate batsman input
+        if not text.isdigit() or int(text) not in ALLOWED_BATSMAN_RUNS:
+            await update.message.reply_text(f"Invalid runs. Please send one of: {sorted(ALLOWED_BATSMAN_RUNS)}")
+            return
+        runs = int(text)
+        match.setdefault("last_batsman_run", None)
+        match["last_batsman_run"] = runs
+        await update.message.reply_text(f"Runs received: {runs}. Waiting for bowler's variation.")
+    else:
+        # Validate bowler input
+        if text not in ALLOWED_BOWLER_VARIATIONS:
+            await update.message.reply_text(f"Invalid bowling variation. Send one of: {', '.join(ALLOWED_BOWLER_VARIATIONS)}")
+            return
+        variation_num = BOWLER_VARIATIONS_MAP[text]
+        match.setdefault("last_bowler_variation", None)
+        match["last_bowler_variation"] = variation_num
+        await update.message.reply_text(f"Bowling variation received: {text}. Waiting for batsman's runs.")
+
+    # If both inputs received, process ball
+    if match.get("last_batsman_run") is not None and match.get("last_bowler_variation") is not None:
+        await handle_ball_result(update, context, match)
+
+async def handle_ball_result(update: Update, context: ContextTypes.DEFAULT_TYPE, match):
+    runs = match.pop("last_batsman_run")
+    variation = match.pop("last_bowler_variation")
+
+    striker = match["striker"]
+    non_striker = match["non_striker"]
+    bowler = match["current_bowler"]
+    batting_team_key = match["batting_team"]
+    bowling_team_key = "B" if batting_team_key == "A" else "A"
+
+    # Check for wicket: batsman runs=0 and bowler variation=0 (rs)
+    if runs == 0 and variation == 0:
+        # Wicket!
+        match["wickets"][batting_team_key] += 1
+        match["players_out"][batting_team_key].append(striker)
+        striker["balls_faced"] = striker.get("balls_faced", 0) + 1
+        await update.message.reply_text(
+            f"WICKET! {mention_player(striker)} is out on ball {match['balls'] + 1}.\n"
+            f"Bowled by {mention_player(bowler)}.\n"
+            f"Host, please assign a new batsman using /bat <striker_num> <non_striker_num>."
+            , parse_mode=ParseMode.MARKDOWN)
+        match["striker"] = None  # Clear striker until host assigns
+    else:
+        # Runs scored
+        match["score"][batting_team_key] += runs
+        striker["runs_scored"] = striker.get("runs_scored", 0) + runs
+        striker["balls_faced"] = striker.get("balls_faced", 0) + 1
+        match["balls"] += 1
+
+        # Commentary message
+        commentary = f"{mention_player(striker)} scored {runs} run{'s' if runs != 1 else ''} off {mention_player(bowler)}'s {list(BOWLER_VARIATIONS_MAP.keys())[list(BOWLER_VARIATIONS_MAP.values()).index(variation)]} ball."
+
+        # Send GIF if applicable
+        gif_url = GIFS.get(runs)
+        if gif_url:
+            await update.message.reply_animation(gif_url, caption=commentary, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await update.message.reply_text(commentary, parse_mode=ParseMode.MARKDOWN)
+
+        # Strike rotation logic
+        over_balls = match["balls"] % 6
+        if runs % 2 == 1:
+            # Odd runs: swap strike
+            match["striker"], match["non_striker"] = match["non_striker"], match["striker"]
+
+        # At end of over (6 balls)
+        if over_balls == 0:
+            # If last ball runs even, swap strike; if odd, retain strike
+            if runs % 2 == 0:
+                match["striker"], match["non_striker"] = match["non_striker"], match["striker"]
+            # Update last bowler
+            match["last_bowler"] = bowler
+            match["current_bowler"] = None
+            await update.message.reply_text(
+                f"Over completed. Host, please assign next bowler using /bowl <bowler_num>.\n"
+                f"Current striker: {mention_player(match['striker'])}"
+                , parse_mode=ParseMode.MARKDOWN)
+
+        # Check if innings over (all wickets or overs)
+        if match["wickets"][batting_team_key] >= (len(match["team_A"]) if batting_team_key == "A" else len(match["team_B"])) - 1:
+            await update.message.reply_text(
+                f"All out! Host, please swap innings using /inningswap."
+            )
+        elif match["balls"] >= match["overs"] * 6:
+            await update.message.reply_text(
+                f"Overs completed! Host, please swap innings using /inningswap."
+            )
+
+# Register handlers for Part 3
+def register_part3_handlers(application):
     application.add_handler(CommandHandler("bat", bat_command))
     application.add_handler(CommandHandler("bowl", bowl_command))
-    application.add_handler(CommandHandler("runs", runs_command))
-    application.add_handler(CommandHandler("wicket", wicket_command))
-    application.add_handler(CommandHandler("score", score_command))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), process_ball))
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-    # Bonus, penalty, and endmatch
+# --- Innings Swap Confirmation Handler ---
+
+async def inningswap_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat.")
+        return
+
+    match = MATCHES[chat.id]
+    if user.id != match["host_id"]:
+        await update.message.reply_text("Only the host can swap innings.")
+        return
+
+    keyboard = [
+        [
+            InlineKeyboardButton("Confirm", callback_data="inningswap_confirm"),
+            InlineKeyboardButton("Cancel", callback_data="inningswap_cancel"),
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Are you sure you want to swap innings?", reply_markup=reply_markup)
+
+async def inningswap_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    chat_id = query.message.chat.id
+
+    if chat_id not in MATCHES:
+        await query.edit_message_text("No ongoing match in this chat.")
+        return
+
+    match = MATCHES[chat_id]
+    user_id = query.from_user.id
+    if user_id != match["host_id"]:
+        await query.edit_message_text("Only the host can confirm innings swap.")
+        return
+
+    if query.data == "inningswap_confirm":
+        # Swap innings
+        if match["innings"] == 1:
+            match["innings"] = 2
+            # Swap batting and bowling teams
+            if match["batting_team"] == "A":
+                match["batting_team"] = "B"
+                match["bowling_team"] = "A"
+            else:
+                match["batting_team"] = "A"
+                match["bowling_team"] = "B"
+            # Reset balls and wickets
+            match["balls"] = 0
+            match["wickets"][match["batting_team"]] = 0
+            match["score"][match["batting_team"]] = 0
+            match["striker"] = None
+            match["non_striker"] = None
+            match["current_bowler"] = None
+            match["last_bowler"] = None
+            await query.edit_message_text("Innings swapped! Host, please assign new batsmen and bowler.")
+        else:
+            await query.edit_message_text("This is the second innings. Match will end soon.")
+    else:
+        await query.edit_message_text("Innings swap cancelled.")
+
+# --- Scoreboard Image Generation ---
+
+async def send_scoreboard(chat_id, context: ContextTypes.DEFAULT_TYPE):
+    if chat_id not in MATCHES:
+        return
+
+    match = MATCHES[chat_id]
+    img, draw, font = create_scoreboard_template()
+
+    # Draw team names and scores
+    draw.text((20, 130), f"{match['team_A_name']} Score: {match['score']['A']} / {match['wickets']['A']}", fill="black", font=font)
+    draw.text((410, 130), f"{match['team_B_name']} Score: {match['score']['B']} / {match['wickets']['B']}", fill="black", font=font)
+
+    # Draw overs and balls
+    overs_completed = match["balls"] // 6
+    balls_in_over = match["balls"] % 6
+    innings = match["innings"]
+    draw.text((20, 350), f"Innings: {innings}", fill="white", font=font)
+    draw.text((20, 370), f"Overs: {overs_completed}.{balls_in_over} / {match['overs']}", fill="white", font=font)
+
+    # Save to bytes
+    bio = BytesIO()
+    bio.name = "scoreboard.png"
+    img.save(bio, "PNG")
+    bio.seek(0)
+
+    await context.bot.send_photo(chat_id=chat_id, photo=InputFile(bio), caption="Current Scoreboard")
+
+# --- Score Command ---
+
+async def score_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat.")
+        return
+    await send_scoreboard(chat.id, context)
+
+# --- Bonus and Penalty Commands ---
+
+async def bonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    args = context.args
+
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat.")
+        return
+    match = MATCHES[chat.id]
+    if user.id != match["host_id"]:
+        await update.message.reply_text("Only the host can add bonus runs.")
+        return
+
+    if len(args) != 2 or args[0].upper() not in ("A", "B") or not args[1].isdigit():
+        await update.message.reply_text("Usage: /bonus <A|B> <runs>")
+        return
+
+    team = args[0].upper()
+    runs = int(args[1])
+    match["score"][team] += runs
+    await update.message.reply_text(f"Added {runs} bonus runs to Team {team}.")
+
+async def penalty_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    args = context.args
+
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat.")
+        return
+    match = MATCHES[chat.id]
+    if user.id != match["host_id"]:
+        await update.message.reply_text("Only the host can deduct penalty runs.")
+        return
+
+    if len(args) != 2 or args[0].upper() not in ("A", "B") or not args[1].isdigit():
+        await update.message.reply_text("Usage: /penalty <A|B> <runs>")
+        return
+
+    team = args[0].upper()
+    runs = int(args[1])
+    match["score"][team] = max(0, match["score"][team] - runs)
+    await update.message.reply_text(f"Deducted {runs} penalty runs from Team {team}.")
+
+# --- End Match Command ---
+
+async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.id not in MATCHES:
+        await update.message.reply_text("No ongoing match in this chat.")
+        return
+    match = MATCHES[chat.id]
+    if user.id != match["host_id"]:
+        await update.message.reply_text("Only the host can end the match.")
+        return
+
+    score_A = match["score"]["A"]
+    score_B = match["score"]["B"]
+
+    if score_A > score_B:
+        result = f"Team A ({match['team_A_name']}) won by {score_A - score_B} runs!"
+    elif score_B > score_A:
+        result = f"Team B ({match['team_B_name']}) won by {len(match['team_B']) - match['wickets']['B']} wickets!"
+    else:
+        result = "The match is a tie!"
+
+    await update.message.reply_text(f"Match ended!\nFinal Score:\nTeam A: {score_A}\nTeam B: {score_B}\n\nResult: {result}")
+
+    # Cleanup
+    del MATCHES[chat.id]
+
+# --- Register Part 4 Handlers ---
+
+def register_part4_handlers(application):
+    application.add_handler(CommandHandler("inningswap", inningswap_command))
+    application.add_handler(CallbackQueryHandler(inningswap_callback, pattern="^inningswap_"))
+    application.add_handler(CommandHandler("score", score_command))
     application.add_handler(CommandHandler("bonus", bonus_command))
     application.add_handler(CommandHandler("penalty", penalty_command))
     application.add_handler(CommandHandler("endmatch", endmatch_command))
+# --- Part 5: Helpers, Full Main, and Deployment Tips ---
 
-    # Host management
-    application.add_handler(CommandHandler("changehost", changehost_command))
-    application.add_handler(CommandHandler("behost", behost_command))
+import sys
 
-    # DM handler for captains sending team names
-    application.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT, dm_team_name_handler))
+# Helper: Check if user is host of a match in chat
+def is_host(user_id, chat_id):
+    match = MATCHES.get(chat_id)
+    return match and match.get("host_id") == user_id
 
-    # Unknown command handler
-    application.add_handler(MessageHandler(filters.COMMAND, unknown_command))
+# Helper: Validate player number input
+def valid_player_number(num_str, team):
+    if not num_str.isdigit():
+        return False
+    num = int(num_str)
+    return 1 <= num <= len(team)
 
-    # Error handler
-    application.add_error_handler(error_handler)
+# Helper: Swap striker and non-striker
+def swap_strike(match):
+    match["striker"], match["non_striker"] = match["non_striker"], match["striker"]
 
-    logger.info("Bot started.")
+# --- Full main combining all parts ---
+
+async def main():
+    application = ApplicationBuilder().token(TOKEN).build()
+
+    # Part 1 handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("register", register))
+    application.add_handler(CommandHandler("profile", profile))
+    application.add_handler(CommandHandler("help", help_command))
+
+    # Part 2 handlers
+    register_part2_handlers(application)
+
+    # Part 3 handlers
+    register_part3_handlers(application)
+
+    # Part 4 handlers
+    register_part4_handlers(application)
+
+    application.post_init = on_startup
+
+    logger.info("Starting bot...")
     await application.run_polling()
 
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main())
-    
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Bot stopped.")
+        sys.exit()
+
+# --- Deployment Tips ---
+
+"""
+1. Create a 'runtime.txt' file with your Python version, e.g.:
+   python-3.10.9
+
+2. Create 'requirements.txt' with dependencies:
+   python-telegram-bot==20.3
+   motor<3.6
+   pymongo<4.9
+   nest_asyncio==1.5.6
+   pillow==9.5.0
+   aiohttp==3.8.1
+
+3. Ensure your MongoDB connection string is set in MONGO_URL.
+
+4. Deploy on Railway or any cloud platform supporting Python.
+
+5. Use polling mode as shown for easy deployment without webhook setup.
+
+6. Test commands step-by-step starting with /start and /register.
+
+7. Follow host instructions printed by the bot carefully.
+
+8. For any issues, check logs and update dependencies accordingly.
+
+"""
+
