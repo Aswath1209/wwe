@@ -3,16 +3,9 @@ import random
 import asyncio
 from datetime import datetime
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    CallbackQueryHandler,
-    filters,
-)
+from telegram.ext import ContextTypes
 
 import nest_asyncio
 nest_asyncio.apply()
@@ -52,7 +45,6 @@ BOWLER_VARIATIONS_MAP = {
 }
 ALLOWED_BOWLER_VARIATIONS = set(BOWLER_VARIATIONS_MAP.keys())
 
-# --- Commentary and GIFs ---
 COMMENTARY_PHRASES = {
     0: ["Dot ball!", "Good defense.", "No run this ball."],
     1: ["Quick single taken.", "Good running between the wickets."],
@@ -69,7 +61,6 @@ GIFS = {
     "century": "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
 }
 
-# --- Utility Functions ---
 def get_username(user):
     return user.first_name or user.username or "Player"
 
@@ -119,7 +110,114 @@ def get_variation_name(variation_num):
         if v == variation_num:
             return k.upper()
     return "UNKNOWN"
-# --- Team and Match Setup Commands ---
+
+# --- Core Commands ---
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user(user)
+    await save_user(user.id)
+    await update.message.reply_text(
+        f"Welcome to CCL HandCricket Bot, {USERS[user.id]['name']}!\n"
+        f"Use /register to get 4000 {COINS_EMOJI} and start playing.\n"
+        f"Use /help for command list."
+    )
+
+async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user(user)
+    u = USERS[user.id]
+    if u["registered"]:
+        await update.message.reply_text("You have already registered.")
+        return
+    u["coins"] += 4000
+    u["registered"] = True
+    await save_user(user.id)
+    await update.message.reply_text(f"Registered! You received 4000 {COINS_EMOJI}.")
+
+async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user(user)
+    u = USERS[user.id]
+    text = (
+        f"{u['name']}'s Profile\n"
+        f"ID: {user.id}\n"
+        f"Purse: {u['coins']}{COINS_EMOJI}\n"
+        f"Wins: {u['wins']}  Losses: {u['losses']}  Ties: {u['ties']}\n"
+        f"Runs Scored: {u.get('runs_scored', 0)}  Balls Faced: {u.get('balls_faced', 0)}"
+    )
+    await update.message.reply_text(text)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "🏏 *CCL HandCricket Bot Help*\n"
+        "\n"
+        "1. /register - Register and get coins\n"
+        "2. /profile - View your stats\n"
+        "3. /cclgroup - Host: Start a new match in group\n"
+        "4. /add_A @username or /add_B @username - Add players to teams\n"
+        "5. /teams - Show teams\n"
+        "6. /cap_A <num> or /cap_B <num> - Assign captains\n"
+        "7. /setovers <num> - Set overs (1-20)\n"
+        "8. /startmatch - Start match after setup\n"
+        "9. /bat <striker_num> <non_striker_num> - Assign batsmen\n"
+        "10. /bowl <bowler_num> - Assign bowler (no consecutive overs)\n"
+        "11. Batsman: Send 0,1,2,3,4,6 | Bowler: Send rs,bouncer,yorker,short,slower,knuckle\n"
+        "12. /score - Show current score\n"
+        "13. /bonus <A|B> <runs> or /penalty <A|B> <runs>\n"
+        "14. /inningswap - Swap innings (with confirm)\n"
+        "15. /endmatch - End match and show result\n"
+        "\n"
+        "*Rules:*\n"
+        "- If batsman sends 0 and bowler sends rs(0), it's OUT.\n"
+        "- Strike rotates on odd runs except last ball of over.\n"
+        "- Host can add players anytime.\n"
+        "- All communication is text-based.\n",
+        parse_mode="Markdown"
+    )
+
+async def cclgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    ensure_user(user)
+
+    if chat.id in MATCHES:
+        await update.message.reply_text(
+            "A match is already ongoing in this chat.\n"
+            "Use /endmatch to finish the current match before starting a new one."
+        )
+        return
+
+    MATCHES[chat.id] = {
+        "host_id": user.id,
+        "team_A": [],
+        "team_B": [],
+        "captain_A": None,
+        "captain_B": None,
+        "overs": None,
+        "state": "setup",
+        "batting_team": None,
+        "bowling_team": None,
+        "score": {"A": 0, "B": 0},
+        "wickets": {"A": 0, "B": 0},
+        "balls": 0,
+        "striker": None,
+        "non_striker": None,
+        "current_bowler": None,
+        "last_bowler": None,
+        "innings": 1,
+        "players_out": {"A": [], "B": []},
+    }
+
+    await update.message.reply_text(
+        f"Match created by {user.first_name}!\n\n"
+        "Host: Add players with /add_A @username or /add_B @username (max 8 per team).\n"
+        "Then assign captains with /cap_A <num> and /cap_B <num>.\n"
+        "Set overs with /setovers <num> (1-20).\n"
+        "Start match with /startmatch.\n"
+        "Use /help for full instructions."
+    )
+# --- Team Management and Match Setup Commands ---
 
 async def add_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -345,7 +443,7 @@ async def startmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"Match setup complete!\n"
         f"Host: Conduct the toss and set which team bats first by setting 'batting_team' and 'bowling_team' in the code (or add a toss command if you wish).\n"
         f"Then assign batsmen with /bat <striker_num> <non_striker_num> and bowler with /bowl <bowler_num>."
-    )
+        )
 # --- Batting, Bowling, and Ball-by-Ball Play ---
 
 async def bat_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -580,7 +678,7 @@ async def score_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Team A: {a}/{wa}\nTeam B: {b}/{wb}\n"
         f"Overs: {balls//6}.{balls%6} / {overs}\n"
         f"Currently Batting: Team {batting}"
-    )
+        )
 # --- Admin, Innings, and End Commands ---
 
 async def bonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -717,6 +815,8 @@ async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del MATCHES[chat.id]
 
 # --- Handler Registration and Main Function ---
+
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 
 def register_handlers(application):
     # Core commands
