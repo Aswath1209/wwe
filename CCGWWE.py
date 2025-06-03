@@ -860,8 +860,6 @@ async def bowl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Error in /bowl: {e}", exc_info=True)
-
-# The ball processing and handle_ball_result functions with DM confirmations and group commentary will be in Part 5.
 async def process_ball(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user = update.effective_user
@@ -1029,4 +1027,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-        
+    
