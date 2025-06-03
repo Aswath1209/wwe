@@ -7,8 +7,8 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    ParseMode,
 )
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -192,6 +192,7 @@ async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
         logger.error(f"Error in /profile: {e}", exc_info=True)
+# --- Help Command ---
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await update.message.reply_text(
@@ -224,6 +225,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in /help: {e}", exc_info=True)
 
+# --- Group Setup Command ---
 async def cclgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat = update.effective_chat
@@ -272,6 +274,7 @@ async def cclgroup_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in /cclgroup: {e}", exc_info=True)
 
+# --- Add Player to Team A ---
 async def add_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat = update.effective_chat
@@ -308,6 +311,7 @@ async def add_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in /add_A: {e}", exc_info=True)
 
+# --- Add Player to Team B ---
 async def add_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat = update.effective_chat
@@ -344,6 +348,7 @@ async def add_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in /add_B: {e}", exc_info=True)
 
+# --- Remove Player from Team A ---
 async def remove_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat = update.effective_chat
@@ -380,6 +385,7 @@ async def remove_A_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in /remove_A: {e}", exc_info=True)
 
+# --- Remove Player from Team B ---
 async def remove_B_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat = update.effective_chat
@@ -667,7 +673,8 @@ async def match_control_callback(update: Update, context: ContextTypes.DEFAULT_T
             if score_A > score_B:
                 result = f"🎉 Team A won by {score_A - score_B} runs! {TROPHY_EMOJI}"
             elif score_B > score_A:
-                result = f"🎉 Team B won by {len(match['team_B']) - wickets_B} wickets! {TROPHY_EMOJI}"
+                wickets_remaining = len(match["team_B"]) - wickets_B
+                result = f"🎉 Team B won by {wickets_remaining} wicket{'s' if wickets_remaining != 1 else ''}! {TROPHY_EMOJI}"
             else:
                 result = "🤝 Match tied!"
 
@@ -1182,7 +1189,7 @@ async def handle_ball_result(context, match, group_chat_id):
     except Exception as e:
         logger.error(f"Error in handle_ball_result: {e}", exc_info=True)
 
-# --- Bonus and Penalty Commands ---
+# --- Bonus Command ---
 
 async def bonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -1212,6 +1219,8 @@ async def bonus_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in /bonus: {e}", exc_info=True)
 
+# --- Penalty Command ---
+
 async def penalty_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         chat = update.effective_chat
@@ -1239,4 +1248,4 @@ async def penalty_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"{CHECK_MARK} Deducted {runs} penalty runs from Team {team}.")
     except Exception as e:
         logger.error(f"Error in /penalty: {e}", exc_info=True)
-    
+        
