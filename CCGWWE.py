@@ -1109,38 +1109,6 @@ def run_commentary(runs):
         ])
     else:
         return ""
-async def setovers_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        chat = update.effective_chat
-        user = update.effective_user
-        args = context.args
-
-        if chat.id not in MATCHES:
-            await update.message.reply_text("No ongoing match in this chat.")
-            return
-
-        match = MATCHES[chat.id]
-
-        if user.id != match["host_id"]:
-            await update.message.reply_text("Only the host can set overs.")
-            return
-
-        if not args or not args[0].isdigit():
-            await update.message.reply_text("Usage: /setovers <number_of_overs>")
-            return
-
-        overs = int(args[0])
-        if overs < 1 or overs > 20:
-            await update.message.reply_text("Overs must be between 1 and 20.")
-            return
-
-        match["overs"] = overs
-        await update.message.reply_text(
-            f"⏳ Overs set to {overs}. Host: When ready, start the match with /startmatch."
-        )
-    except Exception as e:
-        logger.error(f"Error in /setovers: {e}", exc_info=True)
-        
 
 # --- Handle Ball Result ---
 
