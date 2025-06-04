@@ -113,18 +113,23 @@ def finish_round(chat_id):
     looters = [p for p, c in choices.items() if c == "loot"]
 
     result = f"🕛 Time’s up!\n\n🎲 Round {game['round_count']} Results:\n"
+
     if not choices:
         result += "😴 No one made a choice!"
     elif len(looters) == 1:
-    winner = looters[0]
-    game["scores"][winner] += 5
-    result += f"💰 {winner} looted alone and got 5 points!\n"
-    if launchers:
-        for p in launchers:
-            game["scores"][p] += 1
-        result += f"🚀 Launchers still launched safely and got 1 point each."
+        winner = looters[0]
+        game["scores"][winner] += 5
+        result += f"💰 {winner} looted alone and got 5 points!\n"
+        if launchers:
+            for p in launchers:
+                game["scores"][p] += 1
+            result += f"🚀 Launchers also got 1 point each."
     elif len(looters) > 1:
-        result += f"💥 Boom! Multiple looters exploded: {', '.join(looters)}"
+        result += f"💥 Boom! Multiple looters exploded: {', '.join(looters)}\n"
+        if launchers:
+            for p in launchers:
+                game["scores"][p] += 1
+            result += f"🚀 Launchers survived and got 1 point each."
     else:
         for p in launchers:
             game["scores"][p] += 1
