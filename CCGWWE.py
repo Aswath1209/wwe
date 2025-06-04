@@ -8,7 +8,7 @@ TOKEN = "8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM"
 bot = telebot.TeleBot(TOKEN)
 
 games = {}
-ROUND_DURATION = 30
+ROUND_DURATION = 20
 MAX_ROUNDS = 5
 
 def reset_game(chat_id):
@@ -116,9 +116,13 @@ def finish_round(chat_id):
     if not choices:
         result += "😴 No one made a choice!"
     elif len(looters) == 1:
-        winner = looters[0]
-        game["scores"][winner] += 5
-        result += f"💰 {winner} looted alone and got 5 points!"
+    winner = looters[0]
+    game["scores"][winner] += 5
+    result += f"💰 {winner} looted alone and got 5 points!\n"
+    if launchers:
+        for p in launchers:
+            game["scores"][p] += 1
+        result += f"🚀 Launchers still launched safely and got 1 point each."
     elif len(looters) > 1:
         result += f"💥 Boom! Multiple looters exploded: {', '.join(looters)}"
     else:
