@@ -321,42 +321,41 @@ def build_pm_match_message(match):
     bowler = USERS[match["bowling_user"]]["name"]
 
     lines = [
-        f"Over : {over}.{ball_in_over}",
+        f"**Over : {over}.{ball_in_over}**",
         "",
-        f"🏏 Batter : {batter}",
-        f"⚾ Bowler : {bowler}",
+        f"🏏 **Batter : {batter}**",
+        f"⚾ **Bowler : {bowler}**",
         ""
     ]
 
-    # Toss and Bat/Bowl selection
-    if match["state"] == "init":
-        lines.append(f"{batter} Chose to Bat First, {bowler} will Bowl")
+    # Awaiting batsman
+    if match["batsman_choice"] is None and match["bowler_choice"] is None:
+        lines.append(f"**{batter}, choose your Bat number!**")
         return "\n".join(lines)
 
     # Awaiting bowler
     if match["batsman_choice"] is not None and match["bowler_choice"] is None:
-        lines.append(f"{batter} has selected a number, {bowler} its your turn to bowl")
+        lines.append(f"**{batter} has selected a number, {bowler} it's your turn to bowl.**")
         return "\n".join(lines)
 
     # Both have chosen, show both numbers and performance
     if match["batsman_choice"] is not None and match["bowler_choice"] is not None:
-        lines.append(f"{batter} Bat {match['batsman_choice']}")
-        lines.append(f"{bowler} Bowl {match['bowler_choice']}\n")
-        lines.append("Performance :")
-        lines.append(f"{batter} Scored total of {match['score']} Runs\n")
-        if match["batsman_choice"] == match["bowler_choice"]:
+        lines.append(f"**{batter} Bat {match['batsman_choice']}**")
+        lines.append(f"**{bowler} Bowl {match['bowler_choice']}**\n")
+        lines.append("**Total Score :**")
+        lines.append(f"**{batter} scored total of {match['score']} runs**\n")
+        # Out or innings end
+        if match.get("is_out", False):
             if match["innings"] == 1:
-                lines.append(f"{batter} Sets a target of {match['score'] + 1}\n")
-                lines.append(f"{bowler} will now Bat and {batter} will now Bowl!")
+                lines.append(f"**{batter} sets a target of {match['score'] + 1}**\n")
+                lines.append(f"**{bowler} will now Bat and {batter} will now Bowl!**")
             else:
                 lines.append("")  # Winner message handled separately
         else:
-            lines.append("Next Move :")
-            lines.append(f"{batter} Continue your Bat!")
+            lines.append("**Next Move :**")
+            lines.append(f"**{batter} continue your Bat!**")
         return "\n".join(lines)
 
-    # Awaiting batsman
-    lines.append(f"{batter}, choose your Bat number!")
     return "\n".join(lines)
 
 # --- PM Command Handler ---
@@ -576,6 +575,7 @@ async def pm_bat_bowl_choice_callback(update: Update, context: ContextTypes.DEFA
         message_id=message_id,
         text=text,
         reply_markup=keyboard,
+        parse_mode="Markdown"
     )
     await query.answer()
 
@@ -608,7 +608,7 @@ async def pm_batnum_choice_callback(update: Update, context: ContextTypes.DEFAUL
 
     text = build_pm_match_message(match)
     keyboard = pm_number_keyboard(match_id, "bowl")
-    await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard)
+    await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard, parse_mode="Markdown")
     await query.answer()
 
 # --- PM Bowl Number Callback ---
@@ -650,13 +650,14 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
 
     match["balls"] += 1
     is_out = batsman_choice == bowler_choice
+    match["is_out"] = is_out  # Track for message
 
     if not is_out:
         match["score"] += batsman_choice
 
-    # Build message
     text = build_pm_match_message(match)
 
+    # Out in first innings: swap
     if is_out and match["innings"] == 1:
         match["target"] = match["score"] + 1
         match["innings"] = 2
@@ -666,10 +667,17 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
         match["batsman_choice"] = None
         match["bowler_choice"] = None
         match["state"] = "init"
-        await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text,
-                                            reply_markup=pm_number_keyboard(match["match_id"], "bat"))
+        match["is_out"] = False
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text=text,
+            reply_markup=pm_number_keyboard(match["match_id"], "bat"),
+            parse_mode="Markdown"
+        )
         return
 
+    # Out or target reached in second innings: finish match
     if is_out or (match["innings"] == 2 and match["score"] >= match["target"]):
         player1 = USERS[match["batting_user"]]["name"]
         player2 = USERS[match["bowling_user"]]["name"]
@@ -687,7 +695,7 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
             )
         else:
             result_text = text
-        await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=result_text, reply_markup=None)
+        await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=result_text, reply_markup=None, parse_mode="Markdown")
 
         # Update stats and coins
         bet = match["bet"]
@@ -709,12 +717,14 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
         PM_MATCHES.pop(match["match_id"], None)
         return
 
+    # Continue next ball
     match["batsman_choice"] = None
     match["bowler_choice"] = None
     match["state"] = "batting"
+    match["is_out"] = False
     text = build_pm_match_message(match)
     keyboard = pm_number_keyboard(match["match_id"], "bat")
-    await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard)
+    await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard, parse_mode="Markdown")
 import asyncio
 
 # --- CCL Inline Keyboards ---
@@ -1085,22 +1095,22 @@ async def process_ccl_ball(context: ContextTypes.DEFAULT_TYPE, match):
         match["wickets"] = match.get("wickets", 0) + 1
 
     # 1. Over and ball
-    await context.bot.send_message(chat_id=chat_id, text=f"Over {over_num}\nBall {ball_num}")
+    await context.bot.send_message(chat_id=chat_id, text=f"**Over : {over_num}.{ball_num}**", parse_mode="Markdown")
     await asyncio.sleep(3)
     # 2. Bowling variation
     bowler_name = USERS[match["bowling_user"]]["name"]
-    await context.bot.send_message(chat_id=chat_id, text=f"{bowler_name} bowls a {bowler_choice.capitalize()}")
+    await context.bot.send_message(chat_id=chat_id, text=f"**{bowler_name} bowls a {bowler_choice.capitalize()}**", parse_mode="Markdown")
     await asyncio.sleep(4)
 
     # 3. Commentary and GIF
     text_lines = []
     gif_url = None
     if is_out:
-        text_lines.append(random.choice(CCL_COMMENTARY["wicket"]))
+        text_lines.append(f"**{random.choice(CCL_COMMENTARY['wicket'])}**")
         gif_url = random_gif(CCL_GIFS.get("wicket", []))
     else:
         run_str = str(batsman_choice)
-        text_lines.append(random.choice(CCL_COMMENTARY[run_str]))
+        text_lines.append(f"**{random.choice(CCL_COMMENTARY[run_str])}**")
         if run_str in CCL_GIFS:
             gif_url = random_gif(CCL_GIFS[run_str])
         # Milestones
@@ -1113,9 +1123,16 @@ async def process_ccl_ball(context: ContextTypes.DEFAULT_TYPE, match):
 
     if gif_url:
         await context.bot.send_animation(chat_id=chat_id, animation=gif_url)
-    # 4. Current score
-    text_lines.append(f"Current Score: {match['score']}/{match.get('wickets', 0)}")
-    await context.bot.send_message(chat_id=chat_id, text="\n".join(text_lines))
+    # 4. Current score and reveal
+    batter = USERS[match["batting_user"]]["name"]
+    bowler = USERS[match["bowling_user"]]["name"]
+    text_lines.append("")
+    text_lines.append(f"**{batter} Bat {batsman_choice}**")
+    text_lines.append(f"**{bowler} Bowl {bowler_number}**\n")
+    text_lines.append("**Total Score :**")
+    text_lines.append(f"**{batter} scored total of {match['score']} runs**")
+    text_lines.append(f"**Current Score: {match['score']}/{match.get('wickets', 0)}**")
+    await context.bot.send_message(chat_id=chat_id, text="\n".join(text_lines), parse_mode="Markdown")
 
     # 5. Innings and result logic
     if match["innings"] == 1:
@@ -1129,7 +1146,7 @@ async def process_ccl_ball(context: ContextTypes.DEFAULT_TYPE, match):
             match["innings"] = 2
             match["batsman_choice"] = None
             match["bowler_choice"] = None
-            await context.bot.send_message(chat_id=chat_id, text=f"Innings over! Target for second innings: {match['target']}")
+            await context.bot.send_message(chat_id=chat_id, text=f"**Innings over! Target for second innings: {match['target']}**", parse_mode="Markdown")
             await send_ccl_dm_prompts(context, match)
             return
     else:
