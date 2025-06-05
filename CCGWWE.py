@@ -115,7 +115,7 @@ def get_username(user):
 def ensure_user(user):
     if user.id not in USERS:
         USERS[user.id] = {
-            "user_id": user.id,
+            "user_id": user.id,  # Ensure this key is always present
             "name": get_username(user),
             "coins": 0,
             "wins": 0,
@@ -146,6 +146,9 @@ async def load_users():
             if not user_id:
                 logger.warning(f"Skipping user without user_id: {user}")
                 continue
+            # Ensure 'user_id' key exists
+            if "user_id" not in user:
+                user["user_id"] = user_id
             USERS[user_id] = user
             USER_PM_MATCHES[user_id] = set()
             USER_CCL_MATCH[user_id] = None
@@ -154,7 +157,12 @@ async def load_users():
         logger.error(f"Error loading users: {e}", exc_info=True)
 
 def mention_player(player):
-    return f"[{player['name']}](tg://user?id={player['user_id']})"
+    # Safe mention: fallback gracefully if keys missing
+    user_id = player.get('user_id') or player.get('id')
+    name = player.get('name', 'Player')
+    if user_id is None:
+        return name
+    return f"[{name}](tg://user?id={user_id})"
 
 # --- Basic Commands ---
 
@@ -300,7 +308,7 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ {user.first_name} sent {amount}{COINS_EMOJI} to {receiver['name']}."
-    )
+        )
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
 # --- PM Mode Inline Keyboards ---
@@ -549,7 +557,7 @@ async def pm_bat_bowl_choice_callback(update: Update, context: ContextTypes.DEFA
 async def pm_batnum_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = update.effective_user
-    _, num_str = query.data.split("_", 2)
+    _, _, num_str = query.data.split("_", 2)  # Correct unpacking for 3 parts
     num = int(num_str)
 
     current_match = None
@@ -576,7 +584,7 @@ async def pm_batnum_choice_callback(update: Update, context: ContextTypes.DEFAUL
 async def pm_bowlnum_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user = update.effective_user
-    _, num_str = query.data.split("_", 2)
+    _, _, num_str = query.data.split("_", 2)  # Correct unpacking for 3 parts
     num = int(num_str)
 
     current_match = None
