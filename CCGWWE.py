@@ -1,6 +1,7 @@
 import logging
 import random
 import uuid
+import asyncio
 from datetime import datetime, timedelta
 
 from telegram import (
@@ -282,6 +283,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help - Show this help message"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
+import asyncio
+
 # --- PM Mode Inline Keyboards ---
 
 def pm_join_cancel_keyboard(match_id):
@@ -403,7 +406,6 @@ async def pm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "batsman_choice": None,
         "bowler_choice": None,
         "message_id": None,
-        "reveal_pending": False,  # NEW: track if reveal is pending
     }
     USER_PM_MATCHES.setdefault(user.id, set()).add(match_id)
     GROUP_PM_MATCHES.setdefault(chat.id, set()).add(match_id)
@@ -413,6 +415,171 @@ async def pm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=pm_join_cancel_keyboard(match_id),
     )
     PM_MATCHES[match_id]["message_id"] = sent_msg.message_id
+
+# --- PM Join Callback ---
+
+async def pm_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    _, _, match_id = query.data.split("_", 2)
+
+    match = PM_MATCHES.get(match_id)
+    if not match or match["state"] != "waiting_join":
+        await query.answer("Match not available to join.", show_alert=True)
+        return
+
+    if user.id == match["initiator"]:
+        await query.answer("You cannot join your own match.", show_alert=True)
+        return
+
+    if match["opponent"]:
+        await query.answer("Match already has an opponent.", show_alert=True)
+        return
+
+    ensure_user(user)
+
+    if match["bet"] > 0 and USERS[user.id]["coins"] < match["bet"]:
+        await query.answer("You don't have enough coins to join this bet match.", show_alert=True)
+        return
+
+    match["opponent"] = user.id
+    match["state"] = "toss"
+    USER_PM_MATCHES.setdefault(user.id, set()).add(match_id)
+
+    chat_id = match["group_chat_id"]
+    message_id = match["message_id"]
+
+    text = (
+        f"Match started between {USERS[match['initiator']]['name']} and {USERS[user.id]['name']}!\n"
+        f"{USERS[match['initiator']]['name']}, choose Heads or Tails for the toss."
+    )
+    await context.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=text,
+        reply_markup=pm_toss_keyboard(match_id),
+    )
+    await query.answer()
+
+# --- PM Cancel Callback ---
+
+async def pm_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    _, _, match_id = query.data.split("_", 2)
+
+    match = PM_MATCHES.get(match_id)
+    if not match:
+        await query.answer("Match not found or already ended.", show_alert=True)
+        return
+
+    if user.id != match["initiator"]:
+        await query.answer("Only the match initiator can cancel.", show_alert=True)
+        return
+
+    chat_id = match["group_chat_id"]
+    message_id = match.get("message_id")
+
+    USER_PM_MATCHES[match["initiator"]].discard(match_id)
+    if match.get("opponent"):
+        USER_PM_MATCHES[match["opponent"]].discard(match_id)
+    GROUP_PM_MATCHES[chat_id].discard(match_id)
+    PM_MATCHES.pop(match_id, None)
+
+    if message_id:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="The PM match has been cancelled by the initiator.",
+        )
+    await query.answer()
+
+# --- PM Toss Choice Callback ---
+
+async def pm_toss_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    _, _, toss_choice, match_id = query.data.split("_", 3)
+
+    match = PM_MATCHES.get(match_id)
+    if not match or match["state"] != "toss":
+        await query.answer("Invalid toss state.", show_alert=True)
+        return
+
+    if user.id != match["initiator"]:
+        await query.answer("Only the initiator chooses toss.", show_alert=True)
+        return
+
+    coin_result = random.choice(["heads", "tails"])
+    toss_winner = match["initiator"] if toss_choice == coin_result else match["opponent"]
+    toss_loser = match["opponent"] if toss_winner == match["initiator"] else match["initiator"]
+
+    match["toss_winner"] = toss_winner
+    match["toss_loser"] = toss_loser
+    match["state"] = "bat_bowl_choice"
+
+    chat_id = match["group_chat_id"]
+    message_id = match["message_id"]
+
+    text = (
+        f"The coin landed on {coin_result.capitalize()}!\n"
+        f"{USERS[toss_winner]['name']} won the toss! Choose to Bat or Bowl first."
+    )
+    await context.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=text,
+        reply_markup=pm_bat_bowl_keyboard(match_id),
+    )
+    await query.answer()
+
+# --- PM Bat/Bowl Choice Callback ---
+
+async def pm_bat_bowl_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    _, choice, match_id = query.data.split("_", 2)
+
+    match = PM_MATCHES.get(match_id)
+    if not match or match["state"] != "bat_bowl_choice":
+        await query.answer("Invalid state for Bat/Bowl choice.", show_alert=True)
+        return
+
+    if user.id != match["toss_winner"]:
+        await query.answer("Only toss winner can choose.", show_alert=True)
+        return
+
+    if choice == "bat":
+        match["batting_user"] = match["toss_winner"]
+        match["bowling_user"] = match["toss_loser"]
+    else:
+        match["batting_user"] = match["toss_loser"]
+        match["bowling_user"] = match["toss_winner"]
+
+    match.update({
+        "state": "init",
+        "score": 0,
+        "balls": 0,
+        "innings": 1,
+        "target": None,
+        "batsman_choice": None,
+        "bowler_choice": None,
+    })
+
+    chat_id = match["group_chat_id"]
+    message_id = match["message_id"]
+
+    text = build_pm_match_message(match)
+    keyboard = pm_number_keyboard(match_id, "bat")
+
+    await context.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text=text,
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+    await query.answer()
 
 # --- PM Bat Number Callback ---
 
