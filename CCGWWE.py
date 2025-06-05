@@ -207,6 +207,43 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_user(user.id)
     await update.message.reply_text(f"You received 2000 {COINS_EMOJI} as daily reward!", parse_mode="Markdown")
 
+async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user(user)
+
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Please reply to the user you want to send coins to.")
+        return
+
+    args = context.args
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Usage: /send <amount> (reply to user message)")
+        return
+
+    amount = int(args[0])
+    if amount <= 0:
+        await update.message.reply_text("Please enter a positive amount.")
+        return
+
+    sender = USERS[user.id]
+    if sender["coins"] < amount:
+        await update.message.reply_text(f"You don't have enough coins to send {amount}{COINS_EMOJI}.")
+        return
+
+    receiver_user = update.message.reply_to_message.from_user
+    ensure_user(receiver_user)
+    receiver = USERS[receiver_user.id]
+
+    sender["coins"] -= amount
+    receiver["coins"] += amount
+
+    await save_user(user.id)
+    await save_user(receiver_user.id)
+
+    await update.message.reply_text(
+        f"✅ {user.first_name} sent {amount}{COINS_EMOJI} to {receiver['name']}."
+    )
+
 async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if user.id not in ADMIN_IDS:
