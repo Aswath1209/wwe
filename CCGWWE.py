@@ -300,7 +300,7 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ {user.first_name} sent {amount}{COINS_EMOJI} to {receiver['name']}."
-)
+    )
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
 # --- PM Mode Inline Keyboards ---
