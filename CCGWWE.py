@@ -20,10 +20,10 @@ from telegram.ext import (
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # --- Config ---
-TOKEN = "8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM"
+TOKEN = "YOUR_BOT_TOKEN_HERE"
 ADMIN_IDS = {123456789}  # Replace with your Telegram user ID(s)
 
-MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"  # <--- PUT YOUR MONGO URL HERE
+MONGO_URL = "YOUR_MONGODB_CONNECTION_STRING"  # <--- PUT YOUR MONGO URL HERE
 mongo_client = AsyncIOMotorClient(MONGO_URL)
 db = mongo_client.handcricket
 users_collection = db.users
@@ -338,13 +338,12 @@ def build_pm_match_message(match):
         lines.append(f"**{batter} has selected a number, {bowler} it's your turn to bowl.**")
         return "\n".join(lines)
 
-    # Both have chosen, show both numbers and performance
+    # Both have chosen, show both numbers and total score
     if match["batsman_choice"] is not None and match["bowler_choice"] is not None:
         lines.append(f"**{batter} Bat {match['batsman_choice']}**")
         lines.append(f"**{bowler} Bowl {match['bowler_choice']}**\n")
         lines.append("**Total Score :**")
         lines.append(f"**{batter} scored total of {match['score']} runs**\n")
-        # Out or innings end
         if match.get("is_out", False):
             if match["innings"] == 1:
                 lines.append(f"**{batter} sets a target of {match['score'] + 1}**\n")
@@ -1127,10 +1126,10 @@ async def process_ccl_ball(context: ContextTypes.DEFAULT_TYPE, match):
     batter = USERS[match["batting_user"]]["name"]
     bowler = USERS[match["bowling_user"]]["name"]
     text_lines.append("")
-    text_lines.append(f"**{batter} Bat {batsman_choice}**")
-    text_lines.append(f"**{bowler} Bowl {bowler_number}**\n")
+    text_lines.append(f"**{batter}! Bat {batsman_choice}**")
+    text_lines.append(f"**{bowler}! Bowl {bowler_number}**\n")
     text_lines.append("**Total Score :**")
-    text_lines.append(f"**{batter} scored total of {match['score']} runs**")
+    text_lines.append(f"**{batter}! scored total of {match['score']} runs**")
     text_lines.append(f"**Current Score: {match['score']}/{match.get('wickets', 0)}**")
     await context.bot.send_message(chat_id=chat_id, text="\n".join(text_lines), parse_mode="Markdown")
 
