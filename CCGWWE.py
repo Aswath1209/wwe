@@ -259,9 +259,51 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     ])
     await query.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
     await query.answer()
+
+# --- Send Command (Coin Transfer) ---
+
+async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user(user)
+
+    # User must reply to the recipient's message
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Please reply to the user you want to send coins to.")
+        return
+
+    args = context.args
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Usage: /send <amount> (reply to user message)")
+        return
+
+    amount = int(args[0])
+    if amount <= 0:
+        await update.message.reply_text("Please enter a positive amount.")
+        return
+
+    sender = USERS[user.id]
+    if sender["coins"] < amount:
+        await update.message.reply_text(f"You don't have enough coins to send {amount}{COINS_EMOJI}.")
+        return
+
+    receiver_user = update.message.reply_to_message.from_user
+    ensure_user(receiver_user)
+    receiver = USERS[receiver_user.id]
+
+    # Perform coin transfer
+    sender["coins"] -= amount
+    receiver["coins"] += amount
+
+    # Save both users
+    await save_user(user.id)
+    await save_user(receiver_user.id)
+
+    await update.message.reply_text(
+        f"✅ {user.first_name} sent {amount}{COINS_EMOJI} to {receiver['name']}."
+)
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
-# --- PM Mode Keyboards ---
+# --- PM Mode Inline Keyboards ---
 
 def pm_join_cancel_keyboard(match_id):
     return InlineKeyboardMarkup(
@@ -682,7 +724,7 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, current_match):
         chat_id=chat_id,
         text=f"{USERS[current_match['batting_user']]['name']}, choose your batting number:",
         reply_markup=pm_number_keyboard("pm_batnum"),
-)
+    )
 import asyncio
 
 # --- CCL Mode Inline Keyboards ---
