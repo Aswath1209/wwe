@@ -340,19 +340,19 @@ def build_pm_match_message(match):
 
     # Both have chosen, show both numbers and total score
     if match["batsman_choice"] is not None and match["bowler_choice"] is not None:
-        lines.append(f"**{batter} Bat {match['batsman_choice']}**")
-        lines.append(f"**{bowler} Bowl {match['bowler_choice']}**\n")
+        lines.append(f"**{batter}! Bat {match['batsman_choice']}**")
+        lines.append(f"**{bowler}! Bowl {match['bowler_choice']}**\n")
         lines.append("**Total Score :**")
-        lines.append(f"**{batter} scored total of {match['score']} runs**\n")
+        lines.append(f"**{batter}! scored total of {match['score']} runs**\n")
         if match.get("is_out", False):
             if match["innings"] == 1:
-                lines.append(f"**{batter} sets a target of {match['score'] + 1}**\n")
-                lines.append(f"**{bowler} will now Bat and {batter} will now Bowl!**")
+                lines.append(f"**{batter}! sets a target of {match['score'] + 1}**\n")
+                lines.append(f"**{bowler}! will now Bat and {batter}! will now Bowl!**")
             else:
                 lines.append("")  # Winner message handled separately
         else:
             lines.append("**Next Move :**")
-            lines.append(f"**{batter} continue your Bat!**")
+            lines.append(f"**{batter}! continue your Bat!**")
         return "\n".join(lines)
 
     return "\n".join(lines)
@@ -403,6 +403,7 @@ async def pm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "batsman_choice": None,
         "bowler_choice": None,
         "message_id": None,
+        "reveal_pending": False,  # NEW: track if reveal is pending
     }
     USER_PM_MATCHES.setdefault(user.id, set()).add(match_id)
     GROUP_PM_MATCHES.setdefault(chat.id, set()).add(match_id)
@@ -412,171 +413,6 @@ async def pm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=pm_join_cancel_keyboard(match_id),
     )
     PM_MATCHES[match_id]["message_id"] = sent_msg.message_id
-
-# --- PM Join Callback ---
-
-async def pm_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = update.effective_user
-    _, _, match_id = query.data.split("_", 2)
-
-    match = PM_MATCHES.get(match_id)
-    if not match or match["state"] != "waiting_join":
-        await query.answer("Match not available to join.", show_alert=True)
-        return
-
-    if user.id == match["initiator"]:
-        await query.answer("You cannot join your own match.", show_alert=True)
-        return
-
-    if match["opponent"]:
-        await query.answer("Match already has an opponent.", show_alert=True)
-        return
-
-    ensure_user(user)
-
-    if match["bet"] > 0 and USERS[user.id]["coins"] < match["bet"]:
-        await query.answer("You don't have enough coins to join this bet match.", show_alert=True)
-        return
-
-    match["opponent"] = user.id
-    match["state"] = "toss"
-    USER_PM_MATCHES.setdefault(user.id, set()).add(match_id)
-
-    chat_id = match["group_chat_id"]
-    message_id = match["message_id"]
-
-    text = (
-        f"Match started between {USERS[match['initiator']]['name']} and {USERS[user.id]['name']}!\n"
-        f"{USERS[match['initiator']]['name']}, choose Heads or Tails for the toss."
-    )
-    await context.bot.edit_message_text(
-        chat_id=chat_id,
-        message_id=message_id,
-        text=text,
-        reply_markup=pm_toss_keyboard(match_id),
-    )
-    await query.answer()
-
-# --- PM Cancel Callback ---
-
-async def pm_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = update.effective_user
-    _, _, match_id = query.data.split("_", 2)
-
-    match = PM_MATCHES.get(match_id)
-    if not match:
-        await query.answer("Match not found or already ended.", show_alert=True)
-        return
-
-    if user.id != match["initiator"]:
-        await query.answer("Only the match initiator can cancel.", show_alert=True)
-        return
-
-    chat_id = match["group_chat_id"]
-    message_id = match.get("message_id")
-
-    USER_PM_MATCHES[match["initiator"]].discard(match_id)
-    if match.get("opponent"):
-        USER_PM_MATCHES[match["opponent"]].discard(match_id)
-    GROUP_PM_MATCHES[chat_id].discard(match_id)
-    PM_MATCHES.pop(match_id, None)
-
-    if message_id:
-        await context.bot.edit_message_text(
-            chat_id=chat_id,
-            message_id=message_id,
-            text="The PM match has been cancelled by the initiator.",
-        )
-    await query.answer()
-
-# --- PM Toss Choice Callback ---
-
-async def pm_toss_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = update.effective_user
-    _, _, toss_choice, match_id = query.data.split("_", 3)
-
-    match = PM_MATCHES.get(match_id)
-    if not match or match["state"] != "toss":
-        await query.answer("Invalid toss state.", show_alert=True)
-        return
-
-    if user.id != match["initiator"]:
-        await query.answer("Only the initiator chooses toss.", show_alert=True)
-        return
-
-    coin_result = random.choice(["heads", "tails"])
-    toss_winner = match["initiator"] if toss_choice == coin_result else match["opponent"]
-    toss_loser = match["opponent"] if toss_winner == match["initiator"] else match["initiator"]
-
-    match["toss_winner"] = toss_winner
-    match["toss_loser"] = toss_loser
-    match["state"] = "bat_bowl_choice"
-
-    chat_id = match["group_chat_id"]
-    message_id = match["message_id"]
-
-    text = (
-        f"The coin landed on {coin_result.capitalize()}!\n"
-        f"{USERS[toss_winner]['name']} won the toss! Choose to Bat or Bowl first."
-    )
-    await context.bot.edit_message_text(
-        chat_id=chat_id,
-        message_id=message_id,
-        text=text,
-        reply_markup=pm_bat_bowl_keyboard(match_id),
-    )
-    await query.answer()
-
-# --- PM Bat/Bowl Choice Callback ---
-
-async def pm_bat_bowl_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user = update.effective_user
-    _, choice, match_id = query.data.split("_", 2)
-
-    match = PM_MATCHES.get(match_id)
-    if not match or match["state"] != "bat_bowl_choice":
-        await query.answer("Invalid state for Bat/Bowl choice.", show_alert=True)
-        return
-
-    if user.id != match["toss_winner"]:
-        await query.answer("Only toss winner can choose.", show_alert=True)
-        return
-
-    if choice == "bat":
-        match["batting_user"] = match["toss_winner"]
-        match["bowling_user"] = match["toss_loser"]
-    else:
-        match["batting_user"] = match["toss_loser"]
-        match["bowling_user"] = match["toss_winner"]
-
-    match.update({
-        "state": "init",
-        "score": 0,
-        "balls": 0,
-        "innings": 1,
-        "target": None,
-        "batsman_choice": None,
-        "bowler_choice": None,
-    })
-
-    chat_id = match["group_chat_id"]
-    message_id = match["message_id"]
-
-    text = build_pm_match_message(match)
-    keyboard = pm_number_keyboard(match_id, "bat")
-
-    await context.bot.edit_message_text(
-        chat_id=chat_id,
-        message_id=message_id,
-        text=text,
-        reply_markup=keyboard,
-        parse_mode="Markdown"
-    )
-    await query.answer()
 
 # --- PM Bat Number Callback ---
 
@@ -601,7 +437,6 @@ async def pm_batnum_choice_callback(update: Update, context: ContextTypes.DEFAUL
 
     match["batsman_choice"] = num
     match["state"] = "batting"
-
     chat_id = match["group_chat_id"]
     message_id = match["message_id"]
 
@@ -633,12 +468,13 @@ async def pm_bowlnum_choice_callback(update: Update, context: ContextTypes.DEFAU
 
     match["bowler_choice"] = num
 
-    await process_pm_ball(context, match)
+    # Instead of processing the next ball directly, reveal the numbers and score first
+    await reveal_pm_ball(context, match)
     await query.answer()
 
-# --- Process Ball Result in PM Mode ---
+# --- Reveal Both Numbers and Score, Then Continue ---
 
-async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
+async def reveal_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
     batsman_choice = match["batsman_choice"]
     bowler_choice = match["bowler_choice"]
     chat_id = match["group_chat_id"]
@@ -647,14 +483,60 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
     if batsman_choice is None or bowler_choice is None:
         return
 
-    match["balls"] += 1
+    # Calculate out and score, but do NOT increment balls/score yet
     is_out = batsman_choice == bowler_choice
-    match["is_out"] = is_out  # Track for message
+    score = match["score"]
+    balls = match["balls"]
 
     if not is_out:
-        match["score"] += batsman_choice
+        score += batsman_choice
 
-    text = build_pm_match_message(match)
+    # Build the reveal message
+    over = balls // 6
+    ball_in_over = balls % 6 + 1
+    batter = USERS[match["batting_user"]]["name"]
+    bowler = USERS[match["bowling_user"]]["name"]
+
+    lines = [
+        f"**Over : {over}.{ball_in_over}**",
+        "",
+        f"🏏 **Batter : {batter}**",
+        f"⚾ **Bowler : {bowler}**",
+        "",
+        f"**{batter}! Bat {batsman_choice}**",
+        f"**{bowler}! Bowl {bowler_choice}**\n",
+        "**Total Score :**",
+        f"**{batter}! scored total of {score} runs**\n"
+    ]
+
+    if is_out:
+        if match["innings"] == 1:
+            lines.append(f"**{batter}! sets a target of {score + 1}**\n")
+            lines.append(f"**{bowler}! will now Bat and {batter}! will now Bowl!**")
+        # else: winner message handled after
+    else:
+        lines.append("**Next Move :**")
+        lines.append(f"**{batter}! continue your Bat!**")
+
+    await context.bot.edit_message_text(
+        chat_id=chat_id,
+        message_id=message_id,
+        text="\n".join(lines),
+        reply_markup=None,
+        parse_mode="Markdown"
+    )
+
+    # Now update the match state and continue to next ball after a short delay
+    await asyncio.sleep(2.5)
+    await process_pm_ball(context, match, batsman_choice, bowler_choice, is_out)
+
+# --- Process Ball Result in PM Mode ---
+
+async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match, batsman_choice, bowler_choice, is_out):
+    # Actually increment balls/score now
+    match["balls"] += 1
+    if not is_out:
+        match["score"] += batsman_choice
 
     # Out in first innings: swap
     if is_out and match["innings"] == 1:
@@ -667,6 +549,10 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
         match["bowler_choice"] = None
         match["state"] = "init"
         match["is_out"] = False
+        # Show new input keyboard for new batter
+        chat_id = match["group_chat_id"]
+        message_id = match["message_id"]
+        text = build_pm_match_message(match)
         await context.bot.edit_message_text(
             chat_id=chat_id,
             message_id=message_id,
@@ -693,7 +579,9 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
                 f"{winner} won by {win_by} Runs"
             )
         else:
-            result_text = text
+            result_text = build_pm_match_message(match)
+        chat_id = match["group_chat_id"]
+        message_id = match["message_id"]
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=result_text, reply_markup=None, parse_mode="Markdown")
 
         # Update stats and coins
@@ -721,6 +609,8 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
     match["bowler_choice"] = None
     match["state"] = "batting"
     match["is_out"] = False
+    chat_id = match["group_chat_id"]
+    message_id = match["message_id"]
     text = build_pm_match_message(match)
     keyboard = pm_number_keyboard(match["match_id"], "bat")
     await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=keyboard, parse_mode="Markdown")
@@ -1131,6 +1021,9 @@ async def process_ccl_ball(context: ContextTypes.DEFAULT_TYPE, match):
     text_lines.append("**Total Score :**")
     text_lines.append(f"**{batter}! scored total of {match['score']} runs**")
     text_lines.append(f"**Current Score: {match['score']}/{match.get('wickets', 0)}**")
+    if not is_out:
+        text_lines.append("\n**Next Move :**")
+        text_lines.append(f"**{batter}! continue your Bat!**")
     await context.bot.send_message(chat_id=chat_id, text="\n".join(text_lines), parse_mode="Markdown")
 
     # 5. Innings and result logic
