@@ -63,40 +63,17 @@ BOWLING_TYPES = {
     "knuckle": 6,
 }
 
-# --- GIF URLs ---
-RUN_GIFS = {
-    "0": "https://media0.giphy.com/media/QtipHdYxYopX3W6vMs/giphy.gif",
-    "4": "https://media0.giphy.com/media/3o7btXfjIjTcU64YdG/giphy.gif",
-    "6": "https://media4.giphy.com/media/pbhDFQQfXRX8CTmZ4O/giphy.gif",
-    "out": "https://media3.giphy.com/media/Wq3WRGe9N5HkSqjITT/giphy.gif",
-    "halfcentury": "https://media.giphy.com/media/3oEjI6SIIHBdRxXI40/giphy.gif",
-    "century": "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif"
-}
-
-# --- Commentary with emojis for CCL ---
-RUN_COMMENTARY_CCL = {
-    0: ["🛑 Dot Ball!", "🚫 No run.", "🎯 Well bowled, no run."],
-    1: ["🏃‍♂️ Quick single.", "1️⃣ One run taken.", "🤏 They sneak a single."],
-    2: ["2️⃣ Two runs!", "🏃‍♂️ Good running between the wickets.", "🏃‍♂️🏃‍♂️ They pick up a couple."],
-    3: ["3️⃣ Three runs!", "🏃‍♂️🏃‍♂️🏃‍♂️ Great running, three!", "3️⃣ Runs taken."],
-    4: ["🏏 He smashed a Four!", "🎉 Beautiful boundary!", "💥 Cracking shot for four!"],
-    6: ["💥 He Smoked It For A Six!", "🎯 Maximum!", "🔥 What a massive six!"],
-    "out": ["❌ It's Out!", "🎯 Bowled him!", "💥 What a wicket!", "🧤 Caught behind!"],
-}
-
 # --- Global Data ---
 
 USERS = {}  # user_id -> user dict
 
-# PM mode matches: match_id -> match dict
 PM_MATCHES = {}
-USER_PM_MATCHES = {}  # user_id -> set of match_ids (multiple matches allowed)
-GROUP_PM_MATCHES = {}  # group_chat_id -> set of match_ids (multiple matches allowed)
+USER_PM_MATCHES = {}  # user_id -> set of match_ids
+GROUP_PM_MATCHES = {}  # group_chat_id -> set of match_ids
 
-# CCL mode matches: match_id -> match dict
 CCL_MATCHES = {}
-USER_CCL_MATCH = {}  # user_id -> match_id (only one match per user)
-GROUP_CCL_MATCH = {}  # group_chat_id -> match_id (only one match per group)
+USER_CCL_MATCH = {}  # user_id -> match_id
+GROUP_CCL_MATCH = {}  # group_chat_id -> match_id
 
 # --- Helper Functions ---
 
@@ -180,15 +157,18 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user(user)
-    u = USERS[user.id]
+    u = USERS.get(user.id)
+    if not u:
+        await update.message.reply_text("User profile not found. Please /register first.")
+        return
     text = (
         f"**{u['name']}'s Profile**\n\n"
         f"Name: {u['name']}\n"
         f"ID: {user.id}\n"
-        f"Purse: {u['coins']}{COINS_EMOJI}\n\n"
-        f"Wins: {u['wins']}\n"
-        f"Losses: {u['losses']}\n"
-        f"Ties: {u['ties']}\n"
+        f"Purse: {u.get('coins', 0)}{COINS_EMOJI}\n\n"
+        f"Wins: {u.get('wins', 0)}\n"
+        f"Losses: {u.get('losses', 0)}\n"
+        f"Ties: {u.get('ties', 0)}\n"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
 
@@ -210,36 +190,28 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user(user)
-
     if not update.message.reply_to_message:
         await update.message.reply_text("Please reply to the user you want to send coins to.")
         return
-
     args = context.args
     if not args or not args[0].isdigit():
         await update.message.reply_text("Usage: /send <amount> (reply to user message)")
         return
-
     amount = int(args[0])
     if amount <= 0:
         await update.message.reply_text("Please enter a positive amount.")
         return
-
     sender = USERS[user.id]
     if sender["coins"] < amount:
         await update.message.reply_text(f"You don't have enough coins to send {amount}{COINS_EMOJI}.")
         return
-
     receiver_user = update.message.reply_to_message.from_user
     ensure_user(receiver_user)
     receiver = USERS[receiver_user.id]
-
     sender["coins"] -= amount
     receiver["coins"] += amount
-
     await save_user(user.id)
     await save_user(receiver_user.id)
-
     await update.message.reply_text(
         f"✅ {user.first_name} sent {amount}{COINS_EMOJI} to {receiver['name']}."
     )
@@ -249,12 +221,10 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user.id not in ADMIN_IDS:
         await update.message.reply_text("❌ You are not authorized to use this command.")
         return
-
     args = context.args
     if len(args) < 2:
         await update.message.reply_text("Usage: /add <user_id> <amount>")
         return
-
     try:
         target_user_id = int(args[0])
         amount = int(args[1])
@@ -264,7 +234,6 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("Invalid user ID or amount.")
         return
-
     ensure_user(type("User", (), {"id": target_user_id})())
     USERS[target_user_id]["coins"] += amount
     await save_user(target_user_id)
@@ -273,16 +242,13 @@ async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
-
     if chat.type not in ["group", "supergroup"]:
         await update.message.reply_text("❌ This command can only be used in groups.")
         return
-
     member = await context.bot.get_chat_member(chat.id, user.id)
     if member.status not in ["administrator", "creator"]:
         await update.message.reply_text("❌ Only group admins can end ongoing matches.")
         return
-
     ccl_match_id = GROUP_CCL_MATCH.get(chat.id)
     if ccl_match_id:
         match = CCL_MATCHES.get(ccl_match_id)
@@ -294,10 +260,7 @@ async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             CCL_MATCHES.pop(ccl_match_id, None)
             await update.message.reply_text("✅ The ongoing CCL match in this group has been ended by an admin.")
             return
-
     await update.message.reply_text("ℹ️ No ongoing CCL match found in this group.")
-
-# --- Leaderboard Command and Callback ---
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -306,7 +269,6 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🏆 **Top 10 Players by Coins:**\n\n"
     for i, u in enumerate(sorted_users[:10], 1):
         text += f"{i}. {u.get('name', 'Unknown')} - {u.get('coins', 0)} {COINS_EMOJI}\n"
-
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Show Wins 🏆", callback_data="leaderboard_wins")]
     ])
@@ -315,7 +277,6 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data
-
     if data == "leaderboard_coins":
         sorted_users = sorted(USERS.values(), key=lambda u: u.get("coins", 0), reverse=True)
         text = "🏆 **Top 10 Players by Coins:**\n\n"
@@ -324,7 +285,6 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Show Wins 🏆", callback_data="leaderboard_wins")]
         ])
-
     elif data == "leaderboard_wins":
         sorted_users = sorted(USERS.values(), key=lambda u: u.get("wins", 0), reverse=True)
         text = "🏆 **Top 10 Players by Wins:**\n\n"
@@ -333,11 +293,9 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Show Coins 🪙", callback_data="leaderboard_coins")]
         ])
-
     else:
         await query.answer()
         return
-
     await query.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
     await query.answer()
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
@@ -390,27 +348,26 @@ def build_pm_match_message(match):
         ""
     ]
 
-    if match["batsman_choice"] is not None and match["bowler_choice"] is None:
-        lines.append(f"{batting_name} has selected a number, {bowling_name} it's your turn to bowl")
-    elif match["batsman_choice"] is not None and match["bowler_choice"] is not None:
-        lines.append(f"{bowling_name} Bat {match['bowler_choice']}")
-        lines.append(f"{batting_name} Bowl {match['batsman_choice']}")
+    if match["batsman_choice"] is not None and match["bowler_choice"] is not None:
+        lines.append(f"{batting_name} Bat {match['batsman_choice']}")
+        lines.append(f"{bowling_name} Bowl {match['bowler_choice']}")
         lines.append("")
-        lines.append(f"Total Score : {match['score']} Runs")
+        lines.append(f"Total Score:")
+        lines.append(f"{batting_name} Scored total of {match['score']} Runs")
         lines.append("")
 
         if match["batsman_choice"] == match["bowler_choice"]:
             if match["innings"] == 1:
                 lines.append(f"{bowling_name} Sets a target of {match['score'] + 1}")
                 lines.append("")
-                lines.append(f"{batting_name} will now Bat and {bowling_name} will now Bowl!")
+                lines.append(f"{USERS[match['bowling_user']]['name']} will now Bat and {USERS[match['batting_user']]['name']} will now Bowl!")
             else:
-                lines.append("Match Over!")
+                lines.append(f"🏆 {batting_name} won the match!")
         else:
             lines.append("Next Move :")
-            lines.append(f"{bowling_name} Continue your Bat!")
+            lines.append(f"{batting_name} Continue your Bat!")
     else:
-        lines.append(f"{bowling_name}, choose your Bat number!")
+        lines.append(f"{batting_name}, choose your Bat number!")
 
     return "\n".join(lines)
 
@@ -465,8 +422,6 @@ async def pm_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "bowler_choice": None,
         "message_id": None,
         "winner": None,
-        "milestone_50": False,
-        "milestone_100": False,
     }
     USER_PM_MATCHES.setdefault(user.id, set()).add(match_id)
     GROUP_PM_MATCHES.setdefault(chat.id, set()).add(match_id)
@@ -635,8 +590,6 @@ async def pm_bat_bowl_choice_callback(update: Update, context: ContextTypes.DEFA
         "target": None,
         "batsman_choice": None,
         "bowler_choice": None,
-        "milestone_50": False,
-        "milestone_100": False,
     })
 
     chat_id = match["group_chat_id"]
@@ -724,7 +677,6 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
         return
 
     match["balls"] += 1
-
     is_out = batsman_choice == bowler_choice
 
     if not is_out:
@@ -735,6 +687,7 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
     if is_out and match["innings"] == 1:
         match["target"] = match["score"] + 1
         match["innings"] = 2
+        # Swap batting and bowling users for second innings
         match["batting_user"], match["bowling_user"] = match["bowling_user"], match["batting_user"]
         match["score"] = 0
         match["balls"] = 0
@@ -745,28 +698,32 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
 
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text,
                                             reply_markup=pm_number_keyboard(match["match_id"], "bat"))
-        await context.bot.send_message(chat_id=chat_id,
-                                       text=f"{USERS[match['batting_user']]['name']} needs {match['target']} to win!")
         return
 
     if is_out or (match["innings"] == 2 and match["score"] >= match["target"]):
-        winner = match["batting_user"] if (match["innings"] == 2 and match["score"] >= match["target"]) else match["bowling_user"]
-        loser = match["bowling_user"] if winner == match["batting_user"] else match["batting_user"]
+        winner_id = None
+        if match["innings"] == 2 and match["score"] >= match["target"]:
+            winner_id = match["batting_user"]
+        else:
+            winner_id = match["bowling_user"]
+
+        winner_name = USERS[winner_id]["name"]
+
+        text += f"\n\n🏆 {winner_name} won the match!"
 
         await context.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=None)
-        await context.bot.send_message(chat_id=chat_id,
-                                       text=f"🏆 {USERS[winner]['name']} wins the match!")
 
         bet = match["bet"]
         if bet > 0:
-            USERS[winner]["coins"] += bet * 2
-            USERS[loser]["coins"] = max(0, USERS[loser]["coins"] - bet)
+            loser_id = match["batting_user"] if winner_id == match["bowling_user"] else match["bowling_user"]
+            USERS[winner_id]["coins"] += bet * 2
+            USERS[loser_id]["coins"] = max(0, USERS[loser_id]["coins"] - bet)
 
-        USERS[winner]["wins"] += 1
-        USERS[loser]["losses"] += 1
+            USERS[winner_id]["wins"] += 1
+            USERS[loser_id]["losses"] += 1
 
-        await save_user(winner)
-        await save_user(loser)
+            await save_user(winner_id)
+            await save_user(loser_id)
 
         match["state"] = "finished"
 
@@ -777,6 +734,7 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
         PM_MATCHES.pop(match["match_id"], None)
         return
 
+    # Continue innings: reset choices, keep keyboard for batting user
     match["batsman_choice"] = None
     match["bowler_choice"] = None
     match["state"] = "batting"
@@ -1121,30 +1079,13 @@ async def process_ccl_ball(context: ContextTypes.DEFAULT_TYPE, match):
 
     if is_out:
         match["wickets"] += 1
-        text_lines.append(random.choice(RUN_COMMENTARY_CCL["out"]))
-        gif_url = RUN_GIFS["out"]
+        text_lines.append("❌ It's Out!")
     else:
         match["score"] += batsman_choice
-        run_comment_list = RUN_COMMENTARY_CCL.get(batsman_choice, ["Runs scored!"])
-        text_lines.append(random.choice(run_comment_list))
-        gif_url = RUN_GIFS.get(str(batsman_choice), None)
-
+        text_lines.append(f"{USERS[match['batting_user']]['name']} scored {batsman_choice} run(s).")
         text_lines.append(f"Total Score: {match['score']} Runs")
 
-        if not match.get("milestone_50") and match["score"] >= 50:
-            milestone_gif = RUN_GIFS["halfcentury"]
-            milestone_text = "🏏 Half-century! 50 runs!"
-            match["milestone_50"] = True
-        if not match.get("milestone_100") and match["score"] >= 100:
-            milestone_gif = RUN_GIFS["century"]
-            milestone_text = "💯 Century! 100 runs!"
-            match["milestone_100"] = True
-
     await context.bot.send_message(chat_id=chat_id, text="\n".join(text_lines))
-    if gif_url:
-        await context.bot.send_animation(chat_id=chat_id, animation=gif_url)
-    if milestone_gif:
-        await context.bot.send_animation(chat_id=chat_id, animation=milestone_gif, caption=milestone_text)
 
     # Innings and result logic
     if match["innings"] == 1:
@@ -1157,8 +1098,6 @@ async def process_ccl_ball(context: ContextTypes.DEFAULT_TYPE, match):
             match["innings"] = 2
             match["batsman_choice"] = None
             match["bowler_choice"] = None
-            match["milestone_50"] = False
-            match["milestone_100"] = False
             await context.bot.send_message(chat_id=chat_id, text=f"Innings over! Target for second innings: {match['target']}")
 
     else:
@@ -1277,3 +1216,4 @@ async def main():
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
+    
