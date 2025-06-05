@@ -59,6 +59,7 @@ def ensure_user(user):
             "coins": 0,
             "wins": 0,
             "losses": 0,
+            "ties": 0,
             "registered": False,
             "last_daily": None,
         }
@@ -224,13 +225,46 @@ async def endmatch_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     await update.message.reply_text("ℹ️ No ongoing CCL match found in this group.")
 
+# --- Leaderboard with Switch Button ---
+
+def leaderboard_markup(current="coins"):
+    if current == "coins":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("Show Wins 🏆", callback_data="leaderboard_wins")]
+        ])
+    else:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("Show Coins 💰", callback_data="leaderboard_coins")]
+        ])
+
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ensure_user(update.effective_user)
     sorted_users = sorted(USERS.values(), key=lambda u: u.get("coins", 0), reverse=True)
     text = "🏆 Top 10 Players by Coins:\n\n"
     for i, u in enumerate(sorted_users[:10], 1):
         text += f"{i}. {u.get('name', 'Unknown')} - {u.get('coins', 0)} 💰\n"
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, reply_markup=leaderboard_markup("coins"))
+
+async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    if data == "leaderboard_coins":
+        sorted_users = sorted(USERS.values(), key=lambda u: u.get("coins", 0), reverse=True)
+        text = "🏆 Top 10 Players by Coins:\n\n"
+        for i, u in enumerate(sorted_users[:10], 1):
+            text += f"{i}. {u.get('name', 'Unknown')} - {u.get('coins', 0)} 💰\n"
+        markup = leaderboard_markup("coins")
+    elif data == "leaderboard_wins":
+        sorted_users = sorted(USERS.values(), key=lambda u: u.get("wins", 0), reverse=True)
+        text = "🏆 Top 10 Players by Wins:\n\n"
+        for i, u in enumerate(sorted_users[:10], 1):
+            text += f"{i}. {u.get('name', 'Unknown')} - {u.get('wins', 0)} 🏆\n"
+        markup = leaderboard_markup("wins")
+    else:
+        await query.answer()
+        return
+    await query.message.edit_text(text, reply_markup=markup)
+    await query.answer()
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
@@ -290,22 +324,25 @@ def build_pm_match_message(match):
         f"Over : {over}.{ball_in_over}",
         "",
         f"🏏 Batter : {batter}",
-        f"⚾ Bowler : {bowler}",
+        f"🧤 Bowler : {bowler}",
         ""
     ]
 
+    # Toss and Bat/Bowl selection
     if match["state"] == "init":
         lines.append(f"{batter} Chose to Bat First, {bowler} will Bowl")
         return "\n".join(lines)
 
+    # Awaiting bowler
     if match["batsman_choice"] is not None and match["bowler_choice"] is None:
         lines.append(f"{batter} has selected a number, {bowler} its your turn to bowl")
         return "\n".join(lines)
 
+    # Both have chosen, show both numbers and performance
     if match["batsman_choice"] is not None and match["bowler_choice"] is not None:
         lines.append(f"{batter} Bat {match['batsman_choice']}")
         lines.append(f"{bowler} Bowl {match['bowler_choice']}\n")
-        lines.append("Total Score :")
+        lines.append("Performance :")
         lines.append(f"{batter} Scored total of {match['score']} Runs\n")
         if match["batsman_choice"] == match["bowler_choice"]:
             if match["innings"] == 1:
@@ -634,7 +671,6 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
         return
 
     if is_out or (match["innings"] == 2 and match["score"] >= match["target"]):
-        # Show result
         player1 = USERS[match["batting_user"]]["name"]
         player2 = USERS[match["bowling_user"]]["name"]
         score1 = match["score"] if match["innings"] == 2 else match["target"] - 1
@@ -710,7 +746,7 @@ def ccl_bat_bowl_keyboard(match_id):
 CCL_BATTING_NUMBERS = {"0", "1", "2", "3", "4", "6"}
 CCL_BOWLING_TYPES = {"rs", "bouncer", "yorker", "short", "slower", "knuckle"}
 
-# --- Commentary and GIFs (customize GIF URLs as you wish) ---
+# --- Commentary and GIFs (multiple GIFs per type) ---
 
 CCL_COMMENTARY = {
     "0": [
@@ -772,12 +808,29 @@ CCL_COMMENTARY = {
 }
 
 CCL_GIFS = {
-    "0": "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
-    "4": "https://media.giphy.com/media/3o6Zt6ML6BklcajjsA/giphy.gif",
-    "6": "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif",
-    "50": "https://media.giphy.com/media/3o6Zt6ML6BklcajjsA/giphy.gif",  # Replace with your half-century GIF
-    "100": "https://media.giphy.com/media/3o6Zt6ML6BklcajjsA/giphy.gif", # Replace with your century GIF
+    "0": [
+        "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif"
+    ],
+    "4": [
+        "https://media.giphy.com/media/3o6Zt6ML6BklcajjsA/giphy.gif"
+    ],
+    "6": [
+        "https://media.giphy.com/media/l0MYt5jPR6QX5pnqM/giphy.gif"
+    ],
+    "wicket": [
+        "https://media.giphy.com/media/3o6Zt6ML6BklcajjsA/giphy.gif",
+        "https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif"
+    ],
+    "50": [
+        "https://media.giphy.com/media/3o6Zt6ML6BklcajjsA/giphy.gif"
+    ],
+    "100": [
+        "https://media.giphy.com/media/3o6Zt6ML6BklcajjsA/giphy.gif"
+    ],
 }
+
+def random_gif(gif_list):
+    return random.choice(gif_list) if gif_list else None
 
 # --- /ccl Command Handler ---
 
@@ -825,6 +878,7 @@ async def ccl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "bowling_user": None,
         "score": 0,
         "balls": 0,
+        "wickets": 0,
         "innings": 1,
         "target": None,
         "batsman_choice": None,
@@ -950,7 +1004,7 @@ async def ccl_bat_bowl_choice_callback(update: Update, context: ContextTypes.DEF
     await query.message.edit_text(
         f"Match started!\n\n"
         f"🏏 Batter: {batting_mention}\n"
-        f"⚾ Bowler: {bowling_mention}\n\n"
+        f"🧤 Bowler: {bowling_mention}\n\n"
         f"{batting_mention} and {bowling_mention}, please send your choices in DM to me.",
         parse_mode="Markdown",
     )
@@ -1025,32 +1079,45 @@ async def process_ccl_ball(context: ContextTypes.DEFAULT_TYPE, match):
     ball_num = (match["balls"] - 1) % 6 + 1
     bowler_number = {"rs": 0, "bouncer": 1, "yorker": 2, "short": 3, "slower": 4, "knuckle": 6}[bowler_choice]
     is_out = (batsman_choice == bowler_number)
+    if not is_out:
+        match["score"] += batsman_choice
+    else:
+        match["wickets"] = match.get("wickets", 0) + 1
+
+    # 1. Over and ball
     await context.bot.send_message(chat_id=chat_id, text=f"Over {over_num}\nBall {ball_num}")
     await asyncio.sleep(3)
+    # 2. Bowling variation
     bowler_name = USERS[match["bowling_user"]]["name"]
     await context.bot.send_message(chat_id=chat_id, text=f"{bowler_name} bowls a {bowler_choice.capitalize()}")
     await asyncio.sleep(4)
+
+    # 3. Commentary and GIF
     text_lines = []
     gif_url = None
     if is_out:
         text_lines.append(random.choice(CCL_COMMENTARY["wicket"]))
+        gif_url = random_gif(CCL_GIFS.get("wicket", []))
     else:
-        text_lines.append(random.choice(CCL_COMMENTARY[str(batsman_choice)]))
-        match["score"] += batsman_choice
-        # Check for GIFs
-        if str(batsman_choice) in CCL_GIFS:
-            gif_url = CCL_GIFS[str(batsman_choice)]
+        run_str = str(batsman_choice)
+        text_lines.append(random.choice(CCL_COMMENTARY[run_str]))
+        if run_str in CCL_GIFS:
+            gif_url = random_gif(CCL_GIFS[run_str])
         # Milestones
         if not match.get("milestone_50") and match["score"] >= 50:
-            gif_url = CCL_GIFS["50"]
+            gif_url = random_gif(CCL_GIFS["50"])
             match["milestone_50"] = True
         if not match.get("milestone_100") and match["score"] >= 100:
-            gif_url = CCL_GIFS["100"]
+            gif_url = random_gif(CCL_GIFS["100"])
             match["milestone_100"] = True
+
     if gif_url:
         await context.bot.send_animation(chat_id=chat_id, animation=gif_url)
+    # 4. Current score
+    text_lines.append(f"Current Score: {match['score']}/{match.get('wickets', 0)}")
     await context.bot.send_message(chat_id=chat_id, text="\n".join(text_lines))
-    # Innings and result logic
+
+    # 5. Innings and result logic
     if match["innings"] == 1:
         if is_out:
             match["target"] = match["score"] + 1
@@ -1127,13 +1194,16 @@ async def process_ccl_ball(context: ContextTypes.DEFAULT_TYPE, match):
     await send_ccl_dm_prompts(context, match)
 
 # --- Handler Registration ---
+# --- Handler Registration ---
 
 def register_handlers(application):
+    # General commands
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register))
     application.add_handler(CommandHandler("profile", profile))
     application.add_handler(CommandHandler("daily", daily))
     application.add_handler(CommandHandler("leaderboard", leaderboard))
+    application.add_handler(CallbackQueryHandler(leaderboard_callback, pattern="^leaderboard_"))
     application.add_handler(CommandHandler("send", send_command))
     application.add_handler(CommandHandler("add", add_command))
     application.add_handler(CommandHandler("endmatch", endmatch_command))
@@ -1148,13 +1218,37 @@ def register_handlers(application):
     application.add_handler(CallbackQueryHandler(pm_batnum_choice_callback, pattern="^pm_batnum_"))
     application.add_handler(CallbackQueryHandler(pm_bowlnum_choice_callback, pattern="^pm_bowlnum_"))
 
-    # CCL mode handlers
+    # --- CCL mode handlers ---
     application.add_handler(CommandHandler("ccl", ccl_command))
     application.add_handler(CallbackQueryHandler(ccl_join_callback, pattern="^ccl_join_"))
     application.add_handler(CallbackQueryHandler(ccl_cancel_callback, pattern="^ccl_cancel_"))
     application.add_handler(CallbackQueryHandler(ccl_toss_choice_callback, pattern="^ccl_toss_"))
     application.add_handler(CallbackQueryHandler(ccl_bat_bowl_choice_callback, pattern="^ccl_(bat|bowl)_"))
+    # CCL DM handler (for batsman/bowler input)
     application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, ccl_dm_handler))
+
+# --- Leaderboard Callback Handler ---
+
+async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    if data == "leaderboard_coins":
+        sorted_users = sorted(USERS.values(), key=lambda u: u.get("coins", 0), reverse=True)
+        text = "🏆 Top 10 Players by Coins:\n\n"
+        for i, u in enumerate(sorted_users[:10], 1):
+            text += f"{i}. {u.get('name', 'Unknown')} - {u.get('coins', 0)} 💰\n"
+        markup = leaderboard_markup("coins")
+    elif data == "leaderboard_wins":
+        sorted_users = sorted(USERS.values(), key=lambda u: u.get("wins", 0), reverse=True)
+        text = "🏆 Top 10 Players by Wins:\n\n"
+        for i, u in enumerate(sorted_users[:10], 1):
+            text += f"{i}. {u.get('name', 'Unknown')} - {u.get('wins', 0)} 🏆\n"
+        markup = leaderboard_markup("wins")
+    else:
+        await query.answer()
+        return
+    await query.message.edit_text(text, reply_markup=markup)
+    await query.answer()
 
 # --- Startup and Main ---
 
@@ -1172,6 +1266,6 @@ async def main():
 if __name__ == "__main__":
     import nest_asyncio
     import asyncio
-
     nest_asyncio.apply()
     asyncio.get_event_loop().run_until_complete(main())
+    
