@@ -324,7 +324,7 @@ def build_pm_match_message(match):
         f"Over : {over}.{ball_in_over}",
         "",
         f"🏏 Batter : {batter}",
-        f"🧤 Bowler : {bowler}",
+        f"⚾ Bowler : {bowler}",
         ""
     ]
 
@@ -1004,7 +1004,7 @@ async def ccl_bat_bowl_choice_callback(update: Update, context: ContextTypes.DEF
     await query.message.edit_text(
         f"Match started!\n\n"
         f"🏏 Batter: {batting_mention}\n"
-        f"🧤 Bowler: {bowling_mention}\n\n"
+        f"⚾ Bowler: {bowling_mention}\n\n"
         f"{batting_mention} and {bowling_mention}, please send your choices in DM to me.",
         parse_mode="Markdown",
     )
@@ -1192,8 +1192,6 @@ async def process_ccl_ball(context: ContextTypes.DEFAULT_TYPE, match):
     match["batsman_choice"] = None
     match["bowler_choice"] = None
     await send_ccl_dm_prompts(context, match)
-
-# --- Handler Registration ---
 # --- Handler Registration ---
 
 def register_handlers(application):
@@ -1218,7 +1216,7 @@ def register_handlers(application):
     application.add_handler(CallbackQueryHandler(pm_batnum_choice_callback, pattern="^pm_batnum_"))
     application.add_handler(CallbackQueryHandler(pm_bowlnum_choice_callback, pattern="^pm_bowlnum_"))
 
-    # --- CCL mode handlers ---
+    # CCL mode handlers
     application.add_handler(CommandHandler("ccl", ccl_command))
     application.add_handler(CallbackQueryHandler(ccl_join_callback, pattern="^ccl_join_"))
     application.add_handler(CallbackQueryHandler(ccl_cancel_callback, pattern="^ccl_cancel_"))
@@ -1226,29 +1224,6 @@ def register_handlers(application):
     application.add_handler(CallbackQueryHandler(ccl_bat_bowl_choice_callback, pattern="^ccl_(bat|bowl)_"))
     # CCL DM handler (for batsman/bowler input)
     application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, ccl_dm_handler))
-
-# --- Leaderboard Callback Handler ---
-
-async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-    if data == "leaderboard_coins":
-        sorted_users = sorted(USERS.values(), key=lambda u: u.get("coins", 0), reverse=True)
-        text = "🏆 Top 10 Players by Coins:\n\n"
-        for i, u in enumerate(sorted_users[:10], 1):
-            text += f"{i}. {u.get('name', 'Unknown')} - {u.get('coins', 0)} 💰\n"
-        markup = leaderboard_markup("coins")
-    elif data == "leaderboard_wins":
-        sorted_users = sorted(USERS.values(), key=lambda u: u.get("wins", 0), reverse=True)
-        text = "🏆 Top 10 Players by Wins:\n\n"
-        for i, u in enumerate(sorted_users[:10], 1):
-            text += f"{i}. {u.get('name', 'Unknown')} - {u.get('wins', 0)} 🏆\n"
-        markup = leaderboard_markup("wins")
-    else:
-        await query.answer()
-        return
-    await query.message.edit_text(text, reply_markup=markup)
-    await query.answer()
 
 # --- Startup and Main ---
 
