@@ -258,6 +258,8 @@ async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     ])
     await query.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
     await query.answer()
+# Part 2
+
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 
 # --- PM Mode Keyboards ---
@@ -525,14 +527,14 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, current_match):
     else:
         # Second innings: check for win or tie
         target = current_match["target"]
-        innings_ended = current_match["wickets"] >= 1 or current_match["score"] > target
+        innings_ended = current_match["wickets"] >= 1 or current_match["score"] >= target
 
         if innings_ended:
             if current_match["score"] > target:
                 winner_id = current_match["opponent"]
                 loser_id = current_match["initiator"]
                 result_text = f"🏆 {USERS[winner_id]['name']} won the match by chasing the target!"
-            elif current_match["score"] == target:
+            elif current_match["score"] == target and current_match["wickets"] >= 1:
                 winner_id = None
                 loser_id = None
                 result_text = "🤝 The match is a tie!"
@@ -587,6 +589,8 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, current_match):
         text=f"{USERS[current_match['initiator']]['name'] if current_match['innings'] == 1 else USERS[current_match['opponent']]['name']}, choose your batting number:",
         reply_markup=pm_number_keyboard("pm_batnum"),
     )
+import asyncio
+
 # --- CCL Mode Inline Keyboards ---
 
 def ccl_join_cancel_keyboard(match_id):
@@ -626,7 +630,6 @@ async def ccl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ensure_user(user)
 
-    # Enforce only one active CCL match per group
     if GROUP_CCL_MATCH.get(chat.id):
         await update.message.reply_text("❌ There is already an ongoing CCL match in this group. Please wait for it to finish.")
         return
@@ -1035,7 +1038,7 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ {user.first_name} sent {amount}{COINS_EMOJI} to {receiver['name']}."
-        )
+    )
 from telegram.ext import ApplicationBuilder
 
 # --- Handler Registration ---
