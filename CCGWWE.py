@@ -25,7 +25,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 # --- Logging Setup ---
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
 
@@ -125,6 +126,7 @@ async def save_user(user_id):
             {"$set": user},
             upsert=True,
         )
+        logger.info(f"Saved user {user_id} to database.")
     except Exception as e:
         logger.error(f"Error saving user {user_id}: {e}", exc_info=True)
 
@@ -151,50 +153,6 @@ def mention_player(player):
     if user_id is None:
         return name
     return f"[{name}](tg://user?id={user_id})"
-
-# --- Leaderboard Command and Callback ---
-
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    ensure_user(user)
-    sorted_users = sorted(USERS.values(), key=lambda u: u.get("coins", 0), reverse=True)
-    text = "🏆 **Top 10 Players by Coins:**\n\n"
-    for i, u in enumerate(sorted_users[:10], 1):
-        text += f"{i}. {u.get('name', 'Unknown')} - {u.get('coins', 0)} {COINS_EMOJI}\n"
-
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Show Wins 🏆", callback_data="leaderboard_wins")]
-    ])
-    await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
-
-async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
-
-    if data == "leaderboard_coins":
-        sorted_users = sorted(USERS.values(), key=lambda u: u.get("coins", 0), reverse=True)
-        text = "🏆 **Top 10 Players by Coins:**\n\n"
-        for i, u in enumerate(sorted_users[:10], 1):
-            text += f"{i}. {u.get('name', 'Unknown')} - {u.get('coins', 0)} {COINS_EMOJI}\n"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Show Wins 🏆", callback_data="leaderboard_wins")]
-        ])
-
-    elif data == "leaderboard_wins":
-        sorted_users = sorted(USERS.values(), key=lambda u: u.get("wins", 0), reverse=True)
-        text = "🏆 **Top 10 Players by Wins:**\n\n"
-        for i, u in enumerate(sorted_users[:10], 1):
-            text += f"{i}. {u.get('name', 'Unknown')} - {u.get('wins', 0)} Wins\n"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Show Coins 🪙", callback_data="leaderboard_coins")]
-        ])
-
-    else:
-        await query.answer()
-        return
-
-    await query.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
-    await query.answer()
 
 # --- Basic Commands ---
 
@@ -249,42 +207,75 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_user(user.id)
     await update.message.reply_text(f"You received 2000 {COINS_EMOJI} as daily reward!", parse_mode="Markdown")
 
-async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    ensure_user(user)
-
-    if not update.message.reply_to_message:
-        await update.message.reply_text("Please reply to the user you want to send coins to.")
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ You are not authorized to use this command.")
         return
 
     args = context.args
-    if not args or not args[0].isdigit():
-        await update.message.reply_text("Usage: /send <amount> (reply to user message)")
+    if len(args) < 2:
+        await update.message.reply_text("Usage: /add <user_id> <amount>")
         return
 
-    amount = int(args[0])
-    if amount <= 0:
-        await update.message.reply_text("Please enter a positive amount.")
+    try:
+        target_user_id = int(args[0])
+        amount = int(args[1])
+        if amount <= 0:
+            await update.message.reply_text("Amount must be positive.")
+            return
+    except ValueError:
+        await update.message.reply_text("Invalid user ID or amount.")
         return
 
-    sender = USERS[user.id]
-    if sender["coins"] < amount:
-        await update.message.reply_text(f"You don't have enough coins to send {amount}{COINS_EMOJI}.")
+    ensure_user(type("User", (), {"id": target_user_id})())
+    USERS[target_user_id]["coins"] += amount
+    await save_user(target_user_id)
+    await update.message.reply_text(f"✅ Added {amount}{COINS_EMOJI} to user {USERS[target_user_id]['name']}.")
+
+# --- Leaderboard Command and Callback ---
+
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user(user)
+    sorted_users = sorted(USERS.values(), key=lambda u: u.get("coins", 0), reverse=True)
+    text = "🏆 **Top 10 Players by Coins:**\n\n"
+    for i, u in enumerate(sorted_users[:10], 1):
+        text += f"{i}. {u.get('name', 'Unknown')} - {u.get('coins', 0)} {COINS_EMOJI}\n"
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Show Wins 🏆", callback_data="leaderboard_wins")]
+    ])
+    await update.message.reply_text(text, reply_markup=keyboard, parse_mode="Markdown")
+
+async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+
+    if data == "leaderboard_coins":
+        sorted_users = sorted(USERS.values(), key=lambda u: u.get("coins", 0), reverse=True)
+        text = "🏆 **Top 10 Players by Coins:**\n\n"
+        for i, u in enumerate(sorted_users[:10], 1):
+            text += f"{i}. {u.get('name', 'Unknown')} - {u.get('coins', 0)} {COINS_EMOJI}\n"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Show Wins 🏆", callback_data="leaderboard_wins")]
+        ])
+
+    elif data == "leaderboard_wins":
+        sorted_users = sorted(USERS.values(), key=lambda u: u.get("wins", 0), reverse=True)
+        text = "🏆 **Top 10 Players by Wins:**\n\n"
+        for i, u in enumerate(sorted_users[:10], 1):
+            text += f"{i}. {u.get('name', 'Unknown')} - {u.get('wins', 0)} Wins\n"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Show Coins 🪙", callback_data="leaderboard_coins")]
+        ])
+
+    else:
+        await query.answer()
         return
 
-    receiver_user = update.message.reply_to_message.from_user
-    ensure_user(receiver_user)
-    receiver = USERS[receiver_user.id]
-
-    sender["coins"] -= amount
-    receiver["coins"] += amount
-
-    await save_user(user.id)
-    await save_user(receiver_user.id)
-
-    await update.message.reply_text(
-        f"✅ {user.first_name} sent {amount}{COINS_EMOJI} to {receiver['name']}."
-    )
+    await query.message.edit_text(text, reply_markup=keyboard, parse_mode="Markdown")
+    await query.answer()
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 import asyncio
 
@@ -463,6 +454,47 @@ async def pm_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text=text,
         reply_markup=pm_toss_keyboard(match_id),
     )
+    await query.answer()
+
+# --- PM Cancel Callback ---
+
+async def pm_cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    _, _, match_id = query.data.split("_", 2)
+
+    match = PM_MATCHES.get(match_id)
+    if not match:
+        await query.answer("Match not found or already ended.", show_alert=True)
+        return
+
+    if user.id != match["initiator"]:
+        await query.answer("Only the match initiator can cancel.", show_alert=True)
+        return
+
+    chat_id = match["group_chat_id"]
+    message_id = match.get("message_id")
+
+    # Refund bets if any
+    if match["bet"] > 0:
+        USERS[match["initiator"]]["coins"] += match["bet"]
+        if match.get("opponent"):
+            USERS[match["opponent"]]["coins"] += match["bet"]
+
+    # Remove match data
+    USER_PM_MATCHES[match["initiator"]].discard(match_id)
+    if match.get("opponent"):
+        USER_PM_MATCHES[match["opponent"]].discard(match_id)
+    GROUP_PM_MATCHES[chat_id].discard(match_id)
+    PM_MATCHES.pop(match_id, None)
+
+    # Edit the original message to show cancellation
+    if message_id:
+        await context.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=message_id,
+            text="The PM match has been cancelled by the initiator.",
+        )
     await query.answer()
 
 # --- PM Toss Choice Callback ---
@@ -1171,6 +1203,9 @@ def register_handlers(application):
     # Send coins command
     application.add_handler(CommandHandler("send", send_command))
 
+    # Add coins command (admin)
+    application.add_handler(CommandHandler("add", add_command))
+
     # Help command
     application.add_handler(CommandHandler("help", help_command))
 
@@ -1187,6 +1222,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/daily - Claim daily 2000 🪙 coins\n"
         "/leaderboard - Show leaderboard with coins and wins\n"
         "/send - Send coins to another player (reply to their message and use /send <amount>)\n"
+        "/add - Add coins to a user (admin only)\n"
         "/help - Show this help message\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
