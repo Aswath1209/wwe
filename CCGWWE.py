@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 TOKEN = "8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM"  # Replace with your bot token
-ADMIN_IDS = {123456789}  # Replace with your Telegram user ID(s) for admin commands
+ADMIN_IDS = {123456789}  # Replace with your Telegram user ID(s)
 
 MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"  # Replace with your MongoDB connection string
 mongo_client = AsyncIOMotorClient(MONGO_URL)
@@ -682,7 +682,7 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, current_match):
         chat_id=chat_id,
         text=f"{USERS[current_match['batting_user']]['name']}, choose your batting number:",
         reply_markup=pm_number_keyboard("pm_batnum"),
-        )
+    )
 import asyncio
 
 # --- CCL Mode Inline Keyboards ---
@@ -1131,7 +1131,7 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ {user.first_name} sent {amount}{COINS_EMOJI} to {receiver['name']}."
-                                        )
+    )
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 # --- Handler Registration ---
