@@ -31,9 +31,9 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 TOKEN = "8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM"  # Replace with your bot token
-ADMIN_IDS = {123456789}  # Replace with your admin user IDs
+ADMIN_IDS = {123456789}  # Replace with your Telegram user ID(s) for admin commands
 
-MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"  # Replace with your MongoDB URL
+MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"  # Replace with your MongoDB connection string
 mongo_client = AsyncIOMotorClient(MONGO_URL)
 db = mongo_client.handcricket
 users_collection = db.users
@@ -512,7 +512,7 @@ async def pm_batnum_choice_callback(update: Update, context: ContextTypes.DEFAUL
 
     current_match = None
     for m in PM_MATCHES.values():
-        if m["state"] == "batting" and m["batsman_choice"] is None and m["batting_user"] == user.id:
+        if m["state"] == "batting" and m["batting_user"] == user.id and m["batsman_choice"] is None:
             current_match = m
             break
 
@@ -523,7 +523,6 @@ async def pm_batnum_choice_callback(update: Update, context: ContextTypes.DEFAUL
     current_match["batsman_choice"] = num
     await query.answer(f"You chose {num} for batting.")
 
-    # Prompt bowler to choose bowling number
     await context.bot.send_message(
         chat_id=current_match["group_chat_id"],
         text=f"{USERS[current_match['bowling_user']]['name']}, choose your bowling number:",
@@ -540,7 +539,7 @@ async def pm_bowlnum_choice_callback(update: Update, context: ContextTypes.DEFAU
 
     current_match = None
     for m in PM_MATCHES.values():
-        if m["state"] == "batting" and m["bowler_choice"] is None and m["bowling_user"] == user.id:
+        if m["state"] == "batting" and m["bowling_user"] == user.id and m["bowler_choice"] is None:
             current_match = m
             break
 
@@ -683,7 +682,7 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, current_match):
         chat_id=chat_id,
         text=f"{USERS[current_match['batting_user']]['name']}, choose your batting number:",
         reply_markup=pm_number_keyboard("pm_batnum"),
-            )
+        )
 import asyncio
 
 # --- CCL Mode Inline Keyboards ---
@@ -1132,7 +1131,7 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ {user.first_name} sent {amount}{COINS_EMOJI} to {receiver['name']}."
-    )
+                                        )
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 # --- Handler Registration ---
@@ -1204,5 +1203,4 @@ async def main():
 if __name__ == "__main__":
     import asyncio
     asyncio.run(main())
-    
     
