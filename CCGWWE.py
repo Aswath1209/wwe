@@ -20,10 +20,10 @@ from telegram.ext import (
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # --- Config ---
-TOKEN = "YOUR_BOT_TOKEN_HERE"
+TOKEN = "8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM"
 ADMIN_IDS = {123456789}  # Replace with your Telegram user ID(s)
 
-MONGO_URL = "YOUR_MONGODB_CONNECTION_STRING"  # <--- PUT YOUR MONGO URL HERE
+MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"  # <--- PUT YOUR MONGO URL HERE
 mongo_client = AsyncIOMotorClient(MONGO_URL)
 db = mongo_client.handcricket
 users_collection = db.users
