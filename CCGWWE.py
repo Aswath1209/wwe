@@ -284,7 +284,7 @@ async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(
         f"✅ {user.first_name} sent {amount}{COINS_EMOJI} to {receiver['name']}."
-)
+    )
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton
 import asyncio
 
@@ -333,7 +333,7 @@ def build_pm_match_message(match):
     lines = [f"Over : {over}.{ball_in_over}",
              "",
              f"🏏 Batter : {batting_name}",
-             f"{GLOVE_EMOJI} Bowler : {bowling_name}",
+             f"🧤 Bowler : {bowling_name}",
              ""]
 
     if match["batsman_choice"] is not None and match["bowler_choice"] is None:
