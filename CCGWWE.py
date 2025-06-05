@@ -517,7 +517,7 @@ async def pm_batnum_choice_callback(update: Update, context: ContextTypes.DEFAUL
             break
 
     if not current_match:
-        await query.answer("No active batting turn found or already chosen.", show_alert=True)
+        await query.answer("It's not your turn to bat or you already chose.", show_alert=True)
         return
 
     current_match["batsman_choice"] = num
@@ -544,7 +544,7 @@ async def pm_bowlnum_choice_callback(update: Update, context: ContextTypes.DEFAU
             break
 
     if not current_match:
-        await query.answer("No active bowling turn found or already chosen.", show_alert=True)
+        await query.answer("It's not your turn to bowl or you already chose.", show_alert=True)
         return
 
     current_match["bowler_choice"] = num
@@ -976,7 +976,7 @@ async def ccl_dm_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if current_match["batsman_choice"] is not None and current_match["bowler_choice"] is not None:
         await process_ccl_ball(context, current_match)
 
-# --- Process Ball Result in CCL Mode with Commentary and GIFs ---
+# --- process_ccl_ball function ---
 
 async def process_ccl_ball(context: ContextTypes.DEFAULT_TYPE, current_match):
     chat_id = current_match["group_chat_id"]
@@ -1093,45 +1093,6 @@ async def process_ccl_ball(context: ContextTypes.DEFAULT_TYPE, current_match):
     # Reset choices for next ball
     current_match["batsman_choice"] = None
     current_match["bowler_choice"] = None
-
-# --- /send Command: Transfer Coins ---
-
-async def send_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    ensure_user(user)
-
-    if not update.message.reply_to_message:
-        await update.message.reply_text("Please reply to the user you want to send coins to.")
-        return
-
-    args = context.args
-    if not args or not args[0].isdigit():
-        await update.message.reply_text("Usage: /send <amount> (reply to user message)")
-        return
-
-    amount = int(args[0])
-    if amount <= 0:
-        await update.message.reply_text("Please enter a positive amount.")
-        return
-
-    sender = USERS[user.id]
-    if sender["coins"] < amount:
-        await update.message.reply_text(f"You don't have enough coins to send {amount}{COINS_EMOJI}.")
-        return
-
-    receiver_user = update.message.reply_to_message.from_user
-    ensure_user(receiver_user)
-    receiver = USERS[receiver_user.id]
-
-    sender["coins"] -= amount
-    receiver["coins"] += amount
-
-    await save_user(user.id)
-    await save_user(receiver_user.id)
-
-    await update.message.reply_text(
-        f"✅ {user.first_name} sent {amount}{COINS_EMOJI} to {receiver['name']}."
-    )
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
 
 # --- Handler Registration ---
