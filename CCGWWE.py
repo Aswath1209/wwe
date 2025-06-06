@@ -1,8 +1,8 @@
 import random
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
-    ParseMode
 )
+from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
     CallbackQueryHandler
@@ -19,7 +19,6 @@ group_id = None
 group_title = None
 MAX_ROUNDS = 5
 
-# 1. Start registration in group
 async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global players, points, choices, game_active, round_num, group_id, group_title
     if game_active:
@@ -44,7 +43,6 @@ async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ])
     await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
-# 2. Update registration message in group
 async def update_registration_message(context: ContextTypes.DEFAULT_TYPE):
     global players, group_id
     if not group_id:
@@ -81,7 +79,6 @@ async def update_registration_message(context: ContextTypes.DEFAULT_TYPE):
             except:
                 pass
 
-# 3. Join button handler
 async def join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global players, points, group_title
     query = update.callback_query
@@ -108,7 +105,6 @@ async def join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ Please start a private chat with me first and then click Join."
         )
 
-# 4. Command to begin the game
 async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global game_active, players, round_num
     if not game_active:
@@ -121,7 +117,6 @@ async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"🔥 Trust Test Game is starting with {len(players)} players!")
     await start_round(context)
 
-# 5. Start a round: DM all players Trust/Betray buttons
 async def start_round(context: ContextTypes.DEFAULT_TYPE):
     global choices, round_num, players
 
@@ -142,10 +137,8 @@ async def start_round(context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.MARKDOWN
             )
         except:
-            # User might not have started bot
             pass
 
-# 6. Handle Trust/Betray choices from players
 async def choice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global choices, round_num, players, points, game_active
 
@@ -164,19 +157,17 @@ async def choice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "choice_trust":
         choices[user.id] = "trust"
-        points[user.id] += 1  # 1 point for trust
+        points[user.id] += 1
         await query.edit_message_text("✅ You chose 🤝 Trust")
     elif data == "choice_betray":
         choices[user.id] = "betray"
-        points[user.id] += 2  # 2 points for betray
+        points[user.id] += 2
         await query.edit_message_text("✅ You chose 🔪 Betray")
     else:
         await query.edit_message_text("❌ Invalid choice.")
         return
 
-    # Check if all players have chosen
     if len(choices) == len(players):
-        # Announce round results in group
         await announce_round(context)
 
         round_num += 1
@@ -186,7 +177,6 @@ async def choice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await start_round(context)
 
-# 7. Announce round results in group chat
 async def announce_round(context: ContextTypes.DEFAULT_TYPE):
     global choices, players, group_id, round_num
 
@@ -204,7 +194,6 @@ async def announce_round(context: ContextTypes.DEFAULT_TYPE):
     for uid in betrayers:
         text += f"• [{uid}](tg://user?id={uid})\n"
 
-    # Show current points leaderboard
     text += "\n🏆 *Current Points:*\n"
     leaderboard = sorted(((p, uid) for uid, p in points.items()), reverse=True)
     for pts, uid in leaderboard:
@@ -212,7 +201,6 @@ async def announce_round(context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(group_id, text, parse_mode=ParseMode.MARKDOWN)
 
-# 8. Announce final winner
 async def announce_winner(context: ContextTypes.DEFAULT_TYPE):
     global points, group_id
 
@@ -231,7 +219,6 @@ async def announce_winner(context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(group_id, text, parse_mode=ParseMode.MARKDOWN)
 
-# Main function and handlers
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
