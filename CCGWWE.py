@@ -1,149 +1,247 @@
 import random
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ParseMode
+)
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
-    CallbackQueryHandler, MessageHandler, filters
+    CallbackQueryHandler
 )
 
 TOKEN = "8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM"
 
 players = []
-alive_players = []
+points = {}
 choices = {}
-current_pairs = []
 round_num = 0
 game_active = False
 group_id = None
-max_rounds = 20
+group_title = None
+MAX_ROUNDS = 5
 
+# 1. Start registration in group
 async def startgame(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global players, alive_players, choices, game_active, round_num, group_id
+    global players, points, choices, game_active, round_num, group_id, group_title
     if game_active:
-        await update.message.reply_text("A game is already running.")
+        await update.message.reply_text("⚠️ A game is already running.")
         return
-    players = []
-    alive_players = []
-    choices = {}
+    players.clear()
+    points.clear()
+    choices.clear()
     round_num = 0
     game_active = True
     group_id = update.effective_chat.id
-    await update.message.reply_text("🎮 Trust Test is starting! Players, type /join to enter!")
+    group_title = update.effective_chat.title or "this group"
 
-async def join(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if user.id not in players:
-        players.append(user.id)
-        alive_players.append(user.id)
-        await update.message.reply_text(f"{user.first_name} joined the game.")
-    else:
-        await update.message.reply_text("You already joined.")
+    text = (
+        "🎲 *Trust Test - Registration is OPEN!*\n\n"
+        "👥 *Registered Players:*\n"
+        "_None yet_\n\n"
+        "Tap the button below to *Join* the game!"
+    )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👉 Join", callback_data="join")]
+    ])
+    await update.message.reply_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
-async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global round_num
-    if not game_active or len(alive_players) < 2:
-        await update.message.reply_text("❌ Not enough players to start.")
+# 2. Update registration message in group
+async def update_registration_message(context: ContextTypes.DEFAULT_TYPE):
+    global players, group_id
+    if not group_id:
         return
-    await update.message.reply_text("🔥 Game is starting!")
-    await new_round(context)
+    if not players:
+        text = (
+            "🎲 *Trust Test - Registration is OPEN!*\n\n"
+            "👥 *Registered Players:*\n"
+            "_None yet_\n\n"
+            "Tap the button below to *Join* the game!"
+        )
+    else:
+        player_lines = []
+        for uid in players:
+            player_lines.append(f"• [{uid}](tg://user?id={uid})")
+        text = (
+            "🎲 *Trust Test - Registration is OPEN!*\n\n"
+            "👥 *Registered Players:*\n" +
+            "\n".join(player_lines) + 
+            f"\n\n🧍 {len(players)} player(s) registered so far.\n\n"
+            "Tap the button below to *Join* the game!"
+        )
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("👉 Join", callback_data="join")]
+    ])
 
-async def new_round(context: ContextTypes.DEFAULT_TYPE):
-    global current_pairs, choices, round_num
-
-    round_num += 1
-    random.shuffle(alive_players)
-    current_pairs = []
-    choices = {}
-
-    # Pair players
-    while len(alive_players) >= 2:
-        p1 = alive_players.pop()
-        p2 = alive_players.pop()
-        current_pairs.append((p1, p2))
-
-    # Handle unpaired
-    if alive_players:
-        await context.bot.send_message(group_id, f"⚠️ {alive_players[0]} is unpaired and will sit this round.")
-    
-    # Ask choices
-    for p1, p2 in current_pairs:
-        for pid, opponent in [(p1, p2), (p2, p1)]:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🤝 Trust", callback_data=f"trust:{opponent}")],
-                [InlineKeyboardButton("🔪 Betray", callback_data=f"betray:{opponent}")]
-            ])
+    chat = await context.bot.get_chat(group_id)
+    history = await chat.get_history(limit=10)
+    for msg in history:
+        if msg.from_user and msg.from_user.id == context.bot.id:
             try:
-                await context.bot.send_message(pid, f"Round {round_num}\nYour opponent: [{opponent}]\nChoose:", reply_markup=keyboard)
+                await msg.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+                break
             except:
-                pass  # if bot can't DM, skip
+                pass
 
-async def handle_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global choices
+# 3. Join button handler
+async def join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global players, points, group_title
     query = update.callback_query
+    user = query.from_user
     await query.answer()
-    user_id = query.from_user.id
-    if user_id in choices:
-        await query.edit_message_text("✅ Choice already made.")
+
+    if user.id in players:
+        await query.edit_message_text("❌ You already joined the game!")
         return
 
-    data = query.data.split(":")
-    decision, opponent_id = data[0], int(data[1])
-    choices[user_id] = (decision, opponent_id)
-    await query.edit_message_text(f"You chose: {'🤝 Trust' if decision == 'trust' else '🔪 Betray'}")
+    players.append(user.id)
+    points[user.id] = 0
 
-    if all(p1 in choices and p2 in choices for p1, p2 in current_pairs):
-        await resolve_round(context)
+    await update_registration_message(context)
 
-async def resolve_round(context: ContextTypes.DEFAULT_TYPE):
-    global alive_players, current_pairs, game_active
+    try:
+        await context.bot.send_message(
+            user.id,
+            f"✅ You joined the game in *{group_title}*",
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except:
+        await query.edit_message_text(
+            "⚠️ Please start a private chat with me first and then click Join."
+        )
 
-    round_results = "🌀 *Round Results:*\n"
-    new_alive = []
+# 4. Command to begin the game
+async def begin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global game_active, players, round_num
+    if not game_active:
+        await update.message.reply_text("⚠️ No game is currently running. Use /startgame to start registration.")
+        return
+    if len(players) < 2:
+        await update.message.reply_text("⚠️ Need at least 2 players to start the game.")
+        return
+    round_num = 1
+    await update.message.reply_text(f"🔥 Trust Test Game is starting with {len(players)} players!")
+    await start_round(context)
 
-    for p1, p2 in current_pairs:
-        c1, _ = choices.get(p1, ("betray", p2))
-        c2, _ = choices.get(p2, ("betray", p1))
+# 5. Start a round: DM all players Trust/Betray buttons
+async def start_round(context: ContextTypes.DEFAULT_TYPE):
+    global choices, round_num, players
 
-        if c1 == "trust" and c2 == "trust":
-            round_results += f"🤝 Both trusted: [{p1}] and [{p2}] survive.\n"
-            new_alive += [p1, p2]
-        elif c1 == "trust" and c2 == "betray":
-            round_results += f"🔪 [{p2}] betrayed [{p1}]: only [{p2}] survives.\n"
-            new_alive.append(p2)
-        elif c1 == "betray" and c2 == "trust":
-            round_results += f"🔪 [{p1}] betrayed [{p2}]: only [{p1}] survives.\n"
-            new_alive.append(p1)
-        else:
-            round_results += f"💥 Both betrayed: [{p1}] and [{p2}] eliminated.\n"
+    choices.clear()
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🤝 Trust", callback_data="choice_trust"),
+            InlineKeyboardButton("🔪 Betray", callback_data="choice_betray")
+        ]
+    ])
 
-    alive_players[:] = new_alive
-    await context.bot.send_message(group_id, round_results, parse_mode="Markdown")
+    for user_id in players:
+        try:
+            await context.bot.send_message(
+                user_id,
+                f"🎯 *Round {round_num}*: Choose your move!",
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except:
+            # User might not have started bot
+            pass
 
-    if len(alive_players) <= 2:
-        if len(alive_players) == 2:
-            await context.bot.send_message(group_id, f"🏆 Winners: {alive_players[0]} and {alive_players[1]}!")
-        elif len(alive_players) == 1:
-            await context.bot.send_message(group_id, f"🏆 Lone Survivor: {alive_players[0]}")
-        else:
-            await context.bot.send_message(group_id, "💀 No one survived.")
-        reset_game()
+# 6. Handle Trust/Betray choices from players
+async def choice_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global choices, round_num, players, points, game_active
+
+    query = update.callback_query
+    user = query.from_user
+    data = query.data
+    await query.answer()
+
+    if user.id not in players:
+        await query.edit_message_text("❌ You are not part of the current game.")
+        return
+
+    if user.id in choices:
+        await query.edit_message_text("❌ You already chose this round.")
+        return
+
+    if data == "choice_trust":
+        choices[user.id] = "trust"
+        points[user.id] += 1  # 1 point for trust
+        await query.edit_message_text("✅ You chose 🤝 Trust")
+    elif data == "choice_betray":
+        choices[user.id] = "betray"
+        points[user.id] += 2  # 2 points for betray
+        await query.edit_message_text("✅ You chose 🔪 Betray")
     else:
-        await new_round(context)
+        await query.edit_message_text("❌ Invalid choice.")
+        return
 
-def reset_game():
-    global players, alive_players, current_pairs, choices, round_num, game_active
-    players = []
-    alive_players = []
-    current_pairs = []
-    choices = {}
-    round_num = 0
-    game_active = False
+    # Check if all players have chosen
+    if len(choices) == len(players):
+        # Announce round results in group
+        await announce_round(context)
+
+        round_num += 1
+        if round_num > MAX_ROUNDS:
+            await announce_winner(context)
+            game_active = False
+        else:
+            await start_round(context)
+
+# 7. Announce round results in group chat
+async def announce_round(context: ContextTypes.DEFAULT_TYPE):
+    global choices, players, group_id, round_num
+
+    if not group_id:
+        return
+
+    trusters = [uid for uid, ch in choices.items() if ch == "trust"]
+    betrayers = [uid for uid, ch in choices.items() if ch == "betray"]
+
+    text = f"📢 *Round {round_num} Results:*\n\n"
+    text += f"🤝 Trust: {len(trusters)} player(s)\n"
+    for uid in trusters:
+        text += f"• [{uid}](tg://user?id={uid})\n"
+    text += f"\n🔪 Betray: {len(betrayers)} player(s)\n"
+    for uid in betrayers:
+        text += f"• [{uid}](tg://user?id={uid})\n"
+
+    # Show current points leaderboard
+    text += "\n🏆 *Current Points:*\n"
+    leaderboard = sorted(((p, uid) for uid, p in points.items()), reverse=True)
+    for pts, uid in leaderboard:
+        text += f"• [{uid}](tg://user?id={uid}): {pts} pts\n"
+
+    await context.bot.send_message(group_id, text, parse_mode=ParseMode.MARKDOWN)
+
+# 8. Announce final winner
+async def announce_winner(context: ContextTypes.DEFAULT_TYPE):
+    global points, group_id
+
+    if not group_id:
+        return
+
+    max_pts = max(points.values())
+    winners = [uid for uid, p in points.items() if p == max_pts]
+
+    if len(winners) == 1:
+        text = f"🏅 The winner is [{winners[0]}](tg://user?id={winners[0]}) with *{max_pts} points*! 🎉🎉"
+    else:
+        text = f"🏅 It's a tie between {len(winners)} players with *{max_pts} points* each! 🤝\n"
+        for uid in winners:
+            text += f"• [{uid}](tg://user?id={uid})\n"
+
+    await context.bot.send_message(group_id, text, parse_mode=ParseMode.MARKDOWN)
+
+# Main function and handlers
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+
+    app.add_handler(CommandHandler("startgame", startgame))
+    app.add_handler(CommandHandler("begin", begin))
+    app.add_handler(CallbackQueryHandler(join_callback, pattern="^join$"))
+    app.add_handler(CallbackQueryHandler(choice_handler, pattern="^choice_"))
+
+    print("Bot is running...")
+    app.run_polling()
 
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(CommandHandler("startgame", startgame))
-    app.add_handler(CommandHandler("join", join))
-    app.add_handler(CommandHandler("begin", begin))
-    app.add_handler(CallbackQueryHandler(handle_choice))
-
-    print("Bot running...")
-    app.run_polling()
+    main()
