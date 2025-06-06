@@ -23,8 +23,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 # --- Config ---
 TOKEN = "8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM"
 ADMIN_IDS = {123456789}  # Replace with your Telegram user ID(s)
-
-MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"  # <--- PUT YOUR MONGO URL HERE
+MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"
 mongo_client = AsyncIOMotorClient(MONGO_URL)
 db = mongo_client.handcricket
 users_collection = db.users
@@ -312,7 +311,6 @@ def pm_bat_bowl_keyboard(match_id):
     ])
 
 def pm_number_keyboard(match_id, player_type):
-    # Buttons stay visible until match ends
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(str(n), callback_data=f"pm_{player_type}num_{match_id}_{n}") for n in [1,2,3]],
         [InlineKeyboardButton(str(n), callback_data=f"pm_{player_type}num_{match_id}_{n}") for n in [4,5,6]],
@@ -323,18 +321,14 @@ def build_pm_match_message(match):
     ball_in_over = match["balls"] % 6 + 1
     batter = USERS[match["batting_user"]]["name"]
     bowler = USERS[match["bowling_user"]]["name"]
-
     lines = [
         f"**Over : {over} Ball : {ball_in_over}**",
         "",
         f"🏏 **Batter : {batter}**",
         f"⚾ **Bowler : {bowler}**",
-        ""
+        "",
+        f"**Total Score : {match['score']}/{match.get('wickets', 0)}**"
     ]
-
-    # Show current total score only
-    lines.append(f"**Total Score : {match['score']}/{match.get('wickets', 0)}**")
-
     return "\n".join(lines)
 
 # --- PM Command Handler ---
@@ -614,7 +608,6 @@ async def pm_bowlnum_choice_callback(update: Update, context: ContextTypes.DEFAU
 
     match["bowler_choice"] = num
 
-    # Reveal both numbers and update score
     await reveal_pm_ball(context, match)
     await query.answer()
 
@@ -660,7 +653,6 @@ async def reveal_pm_ball(context: ContextTypes.DEFAULT_TYPE, match):
         parse_mode="Markdown"
     )
 
-    # Wait before processing next ball
     await asyncio.sleep(2.5)
     await process_pm_ball(context, match, batsman_choice, bowler_choice, is_out)
 
@@ -758,7 +750,7 @@ async def process_pm_ball(context: ContextTypes.DEFAULT_TYPE, match, batsman_cho
         text=text,
         reply_markup=pm_number_keyboard(match["match_id"], "bat"),
         parse_mode="Markdown"
-        )
+                                           )
 import asyncio
 
 # --- CCL Inline Keyboards ---
