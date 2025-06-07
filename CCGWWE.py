@@ -1,635 +1,1394 @@
 import logging
 import asyncio
 from datetime import datetime, timedelta
-from collections import Counter
-
+from pymongo import MongoClient
 from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    ChatPermissions,
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode
 )
 from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    ContextTypes,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler,
+    filters, ContextTypes, CallbackContext
 )
-
-from pymongo import MongoClient
 
 # === CONFIG ===
 BOT_TOKEN = "8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM"
 MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"
 
-# === GLOBALS ===
-active_games = {}  # group_id: game_data
-
-# === MongoDB Setup ===
-mongo_client = MongoClient(MONGO_URL)
-db = mongo_client["mafia_bot"]
-users_collection = db["users"]
-games_collection = db["games"]
-
-# === Logging ===
+# === LOGGING ===
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# === Helper functions ===
+# === MONGODB SETUP ===
+client = MongoClient(MONGO_URL)
+db = client['mafia_game_db']
+games_col = db['games']
+users_col = db['users']
 
-def get_player_name(game, user_id):
-    for p in game["players"]:
-        if p["user_id"] == user_id:
-            return p["name"]
-    return "Unknown"
+# === ROLE DEFINITIONS ===
+ROLES = {
+    'don': {
+        'name': '🤵🏻 Don',
+        'team': 'mafia',
+        'summary': "You are the Don, leader of the Mafia. Your vote overrides the Mafia's vote.",
+    },
+    'mafia': {
+        'name': '🤵🏼 Mafia',
+        'team': 'mafia',
+        'summary': "You are a Mafia member. Work with your team to eliminate the town.",
+    },
+    'framer': {
+        'name': '🕵️‍♂️ Framer',
+        'team': 'mafia',
+        'summary': "You can frame a player each night to confuse the Detective.",
+    },
+    'detective': {
+        'name': '🕵️‍ Detective',
+        'team': 'town',
+        'summary': "Each night, you can Check or Kill a player.",
+    },
+    'doctor': {
+        'name': '👨🏼‍⚕️ Doctor',
+        'team': 'town',
+        'summary': "You can save someone each night. Self-save allowed only once.",
+    },
+    'follower': {
+        'name': '🤞 Lucky',
+        'team': 'town',
+        'summary': "You are a Lucky follower who can survive a kill once.",
+    },
+    'townie': {
+        'name': '👨🏼 Townie',
+        'team': 'town',
+        'summary': "You are a regular townsperson. Help find the Mafia!",
+    },
+}
 
-def create_inline_keyboard(buttons, row_width=2):
-    keyboard = []
-    for i in range(0, len(buttons), row_width):
-        keyboard.append(buttons[i:i + row_width])
-    return InlineKeyboardMarkup(keyboard)
+# === GAME STATES ===
+STATE_WAITING = "waiting"  # Waiting for registration
+STATE_NIGHT = "night"      # Night phase
+STATE_DAY = "day"          # Day phase - discussion & voting
+STATE_ENDED = "ended"      # Game ended
 
-def build_confirmation_buttons():
-    buttons = [
-        InlineKeyboardButton("✅ Confirm", callback_data="cancel_confirm"),
-        InlineKeyboardButton("❌ Cancel", callback_data="cancel_cancel"),
-    ]
-    return create_inline_keyboard(buttons, row_width=2)
+# === NIGHT PHASE TIMER SECONDS ===
+NIGHT_DURATION = 45
+DAY_VOTING_DURATION = 45
+LYNCH_CONFIRM_DURATION = 30
 
-# === Command Handlers ===
+# === UTILITIES ===
+def format_player_mention(user_id: int, name: str) -> str:
+    return f"[{name}](tg://user?id={user_id})"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Welcome to Mafia Bot!\n"
-        "Use /startmafia in a group to begin a new Mafia game."
-    )
+def get_role_summary(role_key: str) -> str:
+    role = ROLES.get(role_key, {})
+    return role.get('summary', '')
 
-async def startmafia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# === GAME DATA STRUCTURE SAMPLE ===
+# game = {
+#   'chat_id': int,
+#   'state': STATE_WAITING|STATE_NIGHT|STATE_DAY|STATE_ENDED,
+#   'players': { user_id: { 'name': str, 'role': str, 'alive': bool, 'saved_self': bool, 'vote': None or user_id } },
+#   'mafia_chat_id': None or int,
+#   'night_actions': { 'detective': { 'action': 'check' or 'kill', 'target': user_id }, 'doctor': user_id or None, 'framer': user_id or None, 'mafia_votes': {user_id: target_id} },
+#   'votes': { voter_id: target_id },  # For lynching phase
+#   ...
+# }
+
+# === APPLICATION SETUP ===
+app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+# --- More handlers and logic in next parts ---
+# === GLOBAL VARIABLES ===
+active_games = {}  # chat_id: game_data
+
+# === COMMAND HANDLERS ===
+
+async def start_mafia(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
 
-    if chat.type != "group" and chat.type != "supergroup":
-        await update.message.reply_text("You can only start a game in groups.")
+    if chat.type not in ['group', 'supergroup']:
+        await update.message.reply_text("This command can only be used in group chats.")
         return
 
-    if chat.id in active_games:
+    if chat.id in active_games and active_games[chat.id]['state'] != STATE_ENDED:
         await update.message.reply_text("A game is already active in this group.")
         return
 
-    # Initialize a new game state for the group
-    active_games[chat.id] = {
-        "group_id": chat.id,
-        "players": [],
-        "registered_user_ids": set(),
-        "state": "registration",
-        "night": 0,
-        "votes": {},
-        "night_actions": {},
-        "start_time": datetime.utcnow(),
+    # Initialize game data
+    game_data = {
+        'chat_id': chat.id,
+        'state': STATE_WAITING,
+        'players': {},
+        'mafia_chat_id': None,
+        'night_actions': {
+            'detective': {},
+            'doctor': None,
+            'framer': None,
+            'mafia_votes': {}
+        },
+        'votes': {},
+        'lynch_confirmation': None,
+        'lynch_votes': {},
+        'start_time': datetime.utcnow(),
+    }
+
+    active_games[chat.id] = game_data
+
+    await update.message.reply_text(
+        "A new Mafia game has started! Players can register by sending /join to the bot in private chat."
+    )
+
+async def join_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_id = user.id
+    user_name = user.full_name
+
+    # Find all active games where registration is open and user not joined yet
+    games = [g for g in active_games.values() if g['state'] == STATE_WAITING and user_id not in g['players']]
+    if not games:
+        await update.message.reply_text(
+            "No active game available for registration currently."
+        )
+        return
+
+    # For simplicity, join the first available game
+    game = games[0]
+    game['players'][user_id] = {
+        'name': user_name,
+        'role': None,
+        'alive': True,
+        'saved_self': False,
+        'vote': None,
     }
 
     await update.message.reply_text(
-        "Mafia game started!\n"
-        "Players can now register by sending /joinmafia."
+        f"You have successfully joined the Mafia game in group {game['chat_id']}.\n"
+        "Please wait for the game to start."
     )
 
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
+    # Notify group
+    group_chat_id = game['chat_id']
+    try:
+        await context.bot.send_message(
+            chat_id=group_chat_id,
+            text=f"{user_name} has joined the game! Total players: {len(game['players'])}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to notify group about new join: {e}")
 
-    if chat.type != "group" and chat.type != "supergroup":
-        await update.message.reply_text("You can only cancel a game in groups.")
-        return
+# --- More handlers like /cancel, role assignment, night actions etc will be in next parts ---
+# === CONTINUED: ROLE ASSIGNMENT AND GAME START ===
 
-    if chat.id not in active_games:
-        await update.message.reply_text("There is no active game to cancel.")
-        return
+async def assign_roles(game_data):
+    players = list(game_data['players'].keys())
+    total_players = len(players)
 
-    # Ask for confirmation with inline buttons
-    await update.message.reply_text(
-        "Are you sure you want to cancel the ongoing Mafia game?",
-        reply_markup=build_confirmation_buttons()
-    )
+    # Role distribution based on player count (example)
+    # You can customize roles and counts here
+    roles_distribution = []
 
-async def cancel_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    chat_id = query.message.chat_id
-
-    if query.data == "cancel_confirm":
-        if chat_id in active_games:
-            del active_games[chat_id]
-        await query.edit_message_text("The Mafia game has been cancelled.")
+    # Basic example for 8 players:
+    # 1 Don, 2 Mafia, 1 Framer, 1 Detective, 1 Doctor, rest Townie
+    if total_players < 6:
+        # Minimum players condition
+        roles_distribution = ['Don', 'Mafia', 'Detective', 'Doctor']
+        roles_distribution += ['Townie'] * (total_players - len(roles_distribution))
     else:
-        await query.edit_message_text("Game cancellation aborted.")
+        roles_distribution = ['Don', 'Mafia', 'Mafia', 'Framer', 'Detective', 'Doctor']
+        roles_distribution += ['Townie'] * (total_players - len(roles_distribution))
 
-# === Entry point ===
-async def main():
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    random.shuffle(roles_distribution)
+    random.shuffle(players)
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("startmafia", startmafia))
-    application.add_handler(CommandHandler("cancel", cancel))
-    application.add_handler(CallbackQueryHandler(cancel_confirmation, pattern="^cancel_"))
+    for i, user_id in enumerate(players):
+        game_data['players'][user_id]['role'] = roles_distribution[i]
 
-    # Add other handlers later...
-
-    await application.run_polling()
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
-# === Part 2/7 ===
-
-from telegram import ChatAction
-
-# Command: /joinmafia - Players join the current game registration
-async def join_mafia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
-    user = update.effective_user
-
-    if chat.type != "group" and chat.type != "supergroup":
-        await update.message.reply_text("You can only join Mafia games in groups.")
-        return
-
     if chat.id not in active_games:
-        await update.message.reply_text("No active Mafia game in this group. Wait for /startmafia.")
+        await update.message.reply_text("No active game in this group. Use /startmafia to start a new game.")
         return
 
     game = active_games[chat.id]
 
-    if game["state"] != "registration":
-        await update.message.reply_text("Registration is closed.")
+    if game['state'] != STATE_WAITING:
+        await update.message.reply_text("Game already started or ended.")
         return
 
-    if user.id in game["registered_user_ids"]:
-        await update.message.reply_text(f"{user.first_name}, you have already joined the game.")
+    if len(game['players']) < 4:
+        await update.message.reply_text("Need at least 4 players to start the game.")
         return
 
-    # Add player
-    game["players"].append({
-        "user_id": user.id,
-        "name": user.full_name,
-        "role": None,
-        "alive": True,
-        "protected": False,
-        "checked": False,
-        "votes_received": 0,
-    })
-    game["registered_user_ids"].add(user.id)
+    # Assign roles
+    await assign_roles(game)
 
-    await update.message.reply_text(f"{user.full_name} has joined the Mafia game!")
+    # Update game state
+    game['state'] = STATE_NIGHT
 
-# Command: /players - Show list of players registered
-async def show_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-
-    if chat.type != "group" and chat.type != "supergroup":
-        await update.message.reply_text("This command works only in group chats.")
-        return
-
-    if chat.id not in active_games:
-        await update.message.reply_text("No active Mafia game in this group.")
-        return
-
-    game = active_games[chat.id]
-    players = game["players"]
-
-    if not players:
-        await update.message.reply_text("No players have joined yet.")
-        return
-
-    text = "Players registered:\n"
-    for p in players:
-        status = "Alive" if p["alive"] else "Dead"
-        text += f" - {p['name']} ({status})\n"
-
-    await update.message.reply_text(text)
-
-# Register these handlers to the application
-def register_player_handlers(app):
-    app.add_handler(CommandHandler("joinmafia", join_mafia))
-    app.add_handler(CommandHandler("players", show_players))
-# === Part 3/7 ===
-
-import random
-
-# Roles list by player count
-ROLE_SETUPS = {
-    4: ['Don', 'Mafia', 'Townie', 'Suicide'],
-    5: ['Don', 'Mafia', 'Mafia', 'Townie', 'Suicide'],
-    6: ['Don', 'Mafia', 'Mafia', 'Framer', 'Townie', 'Townie'],
-    7: ['Don', 'Mafia', 'Mafia', 'Framer', 'Townie', 'Townie', 'Townie'],
-    8: ['Don', 'Mafia', 'Mafia', 'Framer', 'Watcher', 'Townie', 'Townie', 'Townie'],
-    9: ['Don', 'Mafia', 'Mafia', 'Framer', 'Watcher', 'Townie', 'Townie', 'Townie', 'Townie'],
-    10: ['Don', 'Mafia', 'Mafia', 'Framer', 'Watcher', 'Townie', 'Townie', 'Townie', 'Townie', 'Townie'],
-    # Continue similarly for up to 15 players
-}
-
-# Role descriptions for DM
-ROLE_DESCRIPTIONS = {
-    "Don": "You are the Don, leader of the Mafia. Coordinate with your team and eliminate the Town.",
-    "Mafia": "You are Mafia. Work with Don and Framer to kill the Town.",
-    "Framer": "You are the Framer. Help Mafia by framing Town members to confuse the Detective.",
-    "Watcher": "You are the Watcher. Each night, you watch one player to gather clues.",
-    "Townie": "You are a Townie. Find and lynch the Mafia to protect your town.",
-    "Suicide": "You are the Suicide. Your goal is to get yourself lynched.",
-}
-
-# Assign roles randomly from ROLE_SETUPS according to player count
-def assign_roles(game):
-    players = game["players"]
-    num_players = len(players)
-
-    # Find closest setup available <= num_players
-    valid_counts = sorted([k for k in ROLE_SETUPS.keys() if k <= num_players], reverse=True)
-    chosen_count = valid_counts[0]
-
-    roles = ROLE_SETUPS[chosen_count].copy()
-    random.shuffle(roles)
-
-    for i, player in enumerate(players):
-        if i < chosen_count:
-            player["role"] = roles[i]
-        else:
-            # Extra players beyond setup get Townie role
-            player["role"] = "Townie"
-
-        player["alive"] = True
-        player["protected"] = False
-        player["checked"] = False
-        player["votes_received"] = 0
-
-# Send role message to each player in private chat with button to open bot
-async def send_roles_private(application, game):
-    for player in game["players"]:
+    # Send role messages to each player privately
+    for user_id, pdata in game['players'].items():
         try:
-            chat_id = player["user_id"]
-            role = player["role"]
-            desc = ROLE_DESCRIPTIONS.get(role, "No description available.")
+            role = pdata['role']
+            member_name = pdata['name']
 
-            text = f"Your role is: {role}\n\n{desc}"
+            text = f"Your role is: {role}\n"
 
-            # If Mafia/Don/Framer, list team members
-            if role in ["Don", "Mafia", "Framer"]:
-                team = [p["name"] for p in game["players"] if p["role"] in ["Don", "Mafia", "Framer"] and p["user_id"] != player["user_id"]]
-                if team:
-                    text += "\n\nRemember your team members:\n" + "\n".join(f"  - {t}" for t in team)
+            if role in ['Don', 'Mafia', 'Framer']:
+                # Show team members
+                mafia_members = [p['name'] for p in game['players'].values() if p['role'] in ['Don', 'Mafia', 'Framer'] and p != pdata]
+                text += "Remember your team members:\n"
+                for m in mafia_members:
+                    text += f"  {m}\n"
 
-            # Button to open bot chat
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Open Bot Chat", url=f"tg://user?id={chat_id}")]
-            ])
-
-            await application.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
+            await context.bot.send_message(chat_id=user_id, text=text)
         except Exception as e:
-            print(f"Failed to send role to {player['name']}: {e}")
-# === Part 4/7 ===
+            logger.error(f"Error sending role DM: {e}")
 
-from telegram.ext import CallbackQueryHandler
+    await context.bot.send_message(chat_id=chat.id, text="Game started! Night phase begins. All players check your DMs.")
 
-# Helper: get alive players excluding self
-def alive_others(game, user_id):
-    return [p for p in game["players"] if p["alive"] and p["user_id"] != user_id]
+    # Start night phase logic here (in next parts)
 
-# Create buttons for alive players for actions
-def create_player_buttons(game, user_id, prefix):
-    players = alive_others(game, user_id)
-    buttons = []
-    for p in players:
-        buttons.append(InlineKeyboardButton(p["name"], callback_data=f"{prefix}:{p['user_id']}"))
-    # Arrange buttons in rows of 2
-    keyboard = []
-    row = []
-    for i, btn in enumerate(buttons):
-        row.append(btn)
-        if len(row) == 2:
-            keyboard.append(row)
-            row = []
-    if row:
-        keyboard.append(row)
-    return InlineKeyboardMarkup(keyboard)
+# Handler registration for /startgame command
+# This will be called by admin or after enough players join
+# === NIGHT PHASE HANDLING ===
 
-# Send Detective action choice (Check or Kill)
-async def send_detective_action(application, game, detective_id):
-    chat_id = detective_id
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Check", callback_data="detective:check")],
-        [InlineKeyboardButton("Kill", callback_data="detective:kill")]
-    ])
-    await application.bot.send_message(chat_id, "Detective, choose an action:", reply_markup=keyboard)
+async def send_night_actions(game, context):
+    """
+    Send DM messages to players to perform their night actions.
+    Roles with actions: Detective, Doctor, Mafia, Framer, Watcher (if implemented)
+    """
+    for user_id, pdata in game['players'].items():
+        role = pdata['role']
+        if not pdata.get('alive', True):
+            continue  # skip dead players
 
-# Callback for Detective action type selection
-async def detective_action_choice(update, context):
+        if role == 'Detective':
+            text = "Night phase: Choose your action.\nWhat do you want to do?"
+            buttons = [
+                [InlineKeyboardButton("Check", callback_data='detective_check')],
+                [InlineKeyboardButton("Kill", callback_data='detective_kill')],
+            ]
+            await context.bot.send_message(user_id, text, reply_markup=InlineKeyboardMarkup(buttons))
+
+        elif role == 'Doctor':
+            text = "Night phase: Choose who to save."
+            alive_players = [p for p in game['players'].values() if p.get('alive', True)]
+            buttons = []
+            for p in alive_players:
+                buttons.append([InlineKeyboardButton(p['name'], callback_data=f'doctor_save_{p["user_id"]}')])
+            await context.bot.send_message(user_id, text, reply_markup=InlineKeyboardMarkup(buttons))
+
+        elif role in ['Don', 'Mafia', 'Framer']:
+            text = "Night phase: Discuss with your Mafia team and choose someone to kill."
+            # Mafia chat handled separately; for killing:
+            alive_players = [p for p in game['players'].values() if p.get('alive', True) and p['user_id'] != user_id]
+            buttons = []
+            for p in alive_players:
+                buttons.append([InlineKeyboardButton(p['name'], callback_data=f'mafia_kill_{p["user_id"]}')])
+            await context.bot.send_message(user_id, text, reply_markup=InlineKeyboardMarkup(buttons))
+
+        # Add other roles if needed...
+
+# Placeholder function for handling callback queries for night actions
+async def night_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
-    data = query.data  # e.g. "detective:check" or "detective:kill"
-    action = data.split(":")[1]
+    data = query.data
+    await query.answer()
 
-    # Save action type in user context (or game state)
-    context.user_data["detective_action"] = action
-
-    # Send player selection buttons
-    game = get_game_by_user(user_id)  # Implement accordingly
-    reply_markup = create_player_buttons(game, user_id, f"detective_{action}")
-    await query.edit_message_text(f"Who do you want to {action}?", reply_markup=reply_markup)
-
-# Callback for Detective choosing target player
-async def detective_target_chosen(update, context):
-    query = update.callback_query
-    user_id = query.from_user.id
-    data = query.data  # e.g. "detective_check:123456789"
-
-    action, target_id_str = data.split(":")
-    target_id = int(target_id_str)
-
-    # Save detective's choice in game state
-    game = get_game_by_user(user_id)
-    if action.startswith("detective_check"):
-        game["night_actions"]["detective_check"] = target_id
-        # Notify group
-        await application.bot.send_message(game["group_id"], "🕵️‍ Detective is looking for the criminals...")
-    elif action.startswith("detective_kill"):
-        game["night_actions"]["detective_kill"] = target_id
-        await application.bot.send_message(game["group_id"], "🕵️‍ Detective has his weapons lock'n'loaded...")
-
-    await query.edit_message_text(f"You've voted for {get_player_name(game, target_id)}")
-
-# Similarly for Doctor Save
-async def send_doctor_action(application, game, doctor_id):
-    keyboard = create_player_buttons(game, doctor_id, "doctor_save")
-    await application.bot.send_message(doctor_id, "Doctor, who do you want to save tonight? (You can only save yourself once)", reply_markup=keyboard)
-
-async def doctor_save_chosen(update, context):
-    query = update.callback_query
-    user_id = query.from_user.id
-    target_id = int(query.data.split(":")[1])
-    game = get_game_by_user(user_id)
-
-    # Check if doctor has saved self before
-    player = get_player(game, user_id)
-    if target_id == user_id and player.get("doctor_self_save_used", False):
-        await query.answer("You have already saved yourself once, choose someone else.", show_alert=True)
+    # Find game where user is playing
+    game = None
+    for g in active_games.values():
+        if user_id in g['players']:
+            game = g
+            break
+    if not game:
+        await query.edit_message_text("You are not in an active game.")
         return
-    if target_id == user_id:
-        player["doctor_self_save_used"] = True
 
-    game["night_actions"]["doctor_save"] = target_id
-    await query.edit_message_text(f"You've chosen to save {get_player_name(game, target_id)}")
+    pdata = game['players'][user_id]
+    role = pdata['role']
 
-# Mafia kill action
-async def send_mafia_action(application, game, mafia_id):
-    keyboard = create_player_buttons(game, mafia_id, "mafia_kill")
-    await application.bot.send_message(mafia_id, "Mafia, who do you want to kill tonight?", reply_markup=keyboard)
+    if data.startswith('detective_check'):
+        # Send list of players to check
+        alive_players = [p for p in game['players'].values() if p.get('alive', True) and p['user_id'] != user_id]
+        buttons = [[InlineKeyboardButton(p['name'], callback_data=f'detective_check_target_{p["user_id"]}')] for p in alive_players]
+        buttons.append([InlineKeyboardButton("Back", callback_data='detective_back')])
+        await query.edit_message_text("Who will you check?", reply_markup=InlineKeyboardMarkup(buttons))
 
-async def mafia_kill_chosen(update, context):
+    elif data.startswith('detective_kill'):
+        # Send list of players to kill
+        alive_players = [p for p in game['players'].values() if p.get('alive', True) and p['user_id'] != user_id]
+        buttons = [[InlineKeyboardButton(p['name'], callback_data=f'detective_kill_target_{p["user_id"]}')] for p in alive_players]
+        buttons.append([InlineKeyboardButton("Back", callback_data='detective_back')])
+        await query.edit_message_text("Who will you kill?", reply_markup=InlineKeyboardMarkup(buttons))
+
+    elif data == 'detective_back':
+        # Show main detective action buttons again
+        buttons = [
+            [InlineKeyboardButton("Check", callback_data='detective_check')],
+            [InlineKeyboardButton("Kill", callback_data='detective_kill')],
+        ]
+        await query.edit_message_text("Choose your action:", reply_markup=InlineKeyboardMarkup(buttons))
+
+    # Further handle target selection for detective check or kill
+    elif data.startswith('detective_check_target_'):
+        target_id = int(data.split('_')[-1])
+        # Record detective check action
+        game['night_actions'][user_id] = {'action': 'check', 'target': target_id}
+        await query.edit_message_text(f"You chose to check {game['players'][target_id]['name']}.")
+        # Send notification to group chat about detective action starting
+        await context.bot.send_message(game['group_id'], "🕵️‍ Detective is looking for the criminals...")
+        # Further logic to process after night ends...
+
+    elif data.startswith('detective_kill_target_'):
+        target_id = int(data.split('_')[-1])
+        # Record detective kill action
+        game['night_actions'][user_id] = {'action': 'kill', 'target': target_id}
+        await query.edit_message_text(f"You chose to kill {game['players'][target_id]['name']}.")
+        # Notify group chat
+        await context.bot.send_message(game['group_id'], "🕵️‍ Detective has his weapons lock'n'loaded...")
+        # Further logic...
+
+    # Add callbacks for doctor save, mafia kill, framer framing similarly...
+
+# You will continue this night actions resolution and then transition to day phase with voting
+# === VOTING PHASE ===
+
+async def start_voting_phase(game, context):
+    """
+    Sends voting message in group chat with inline button 'Vote' that opens bot DM.
+    Voting lasts 45 seconds.
+    """
+    group_id = game['group_id']
+    text = (
+        "It's mob justice time! Vote for the most suspicious player.\n"
+        "Voting will last 45 seconds."
+    )
+    vote_button = InlineKeyboardButton("Vote 🗳️", url=f"tg://user?id={context.bot.id}")
+    keyboard = InlineKeyboardMarkup([[vote_button]])
+    await context.bot.send_message(group_id, text, reply_markup=keyboard)
+    # After sending, start timer for voting (could use asyncio sleep or job queue)
+
+async def send_vote_dm(user_id, game, context):
+    """
+    Sends DM to user with buttons for alive players (except self) to vote for lynching.
+    """
+    alive_players = [p for p in game['players'].values() if p.get('alive', True) and p['user_id'] != user_id]
+    buttons = [[InlineKeyboardButton(p['name'], callback_data=f'vote_{p["user_id"]}')] for p in alive_players]
+    if not buttons:
+        await context.bot.send_message(user_id, "No players available to vote for.")
+        return
+    await context.bot.send_message(user_id, "Time to seek the guilty!\nWho are you going to lynch?", reply_markup=InlineKeyboardMarkup(buttons))
+
+async def vote_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    user_id = query.from_user.id
-    target_id = int(query.data.split(":")[1])
-    game = get_game_by_user(user_id)
+    voter_id = query.from_user.id
+    data = query.data
+    await query.answer()
 
-    # Save mafia kill vote (handle multiple mafia voting logic here)
-    game["night_actions"]["mafia_kill"] = target_id
+    if not data.startswith("vote_"):
+        await query.edit_message_text("Invalid vote action.")
+        return
 
-    # Announce vote in mafia chat or DM
-    mafia_name = get_player_name(game, user_id)
-    target_name = get_player_name(game, target_id)
-    mafia_chat_id = game["mafia_chat_id"]
-    await application.bot.send_message(mafia_chat_id, f"🤵🏼 Mafia {mafia_name} voted for {target_name}")
+    voted_id = int(data.split('_')[1])
+    # Find game of voter
+    game = None
+    for g in active_games.values():
+        if voter_id in g['players']:
+            game = g
+            break
+    if not game:
+        await query.edit_message_text("You are not in an active game.")
+        return
 
-    await query.edit_message_text(f"You've voted to kill {target_name}")
+    # Record vote
+    game.setdefault('votes', {})
+    game['votes'][voter_id] = voted_id
 
-# Utility functions you need to implement:
-# get_game_by_user(user_id) => returns current game dict user is in
-# get_player(game, user_id) => returns player dict by user id
-# get_player_name(game, user_id) => returns player name string
-# === Part 5/7 ===
+    # Announce in group chat who voted for whom with tagged names
+    group_id = game['group_id']
+    voter_name = game['players'][voter_id]['name']
+    voted_name = game['players'][voted_id]['name']
 
-import asyncio
+    mention_voter = f"[{voter_name}](tg://user?id={voter_id})"
+    mention_voted = f"[{voted_name}](tg://user?id={voted_id})"
+    msg = f"𝗩𝗢𝗧𝗘: {mention_voter} voted for {mention_voted}"
+    await context.bot.send_message(group_id, msg, parse_mode=ParseMode.MARKDOWN)
 
-async def resolve_night_actions(application, game):
-    actions = game.get("night_actions", {})
+    await query.edit_message_text(f"You voted for {voted_name}.")
 
-    group_id = game["group_id"]
+async def tally_votes_and_confirm_lynch(game, context):
+    """
+    After voting ends, tally votes and find the player with most votes.
+    Send confirmation message with 👍 and 👎 buttons in group chat.
+    Voting for lynch confirmation lasts 30 seconds.
+    """
+    votes = game.get('votes', {})
+    if not votes:
+        await context.bot.send_message(game['group_id'], "No votes were cast. No lynching today.")
+        return
 
-    killed_players = []
-    saved_player_id = actions.get("doctor_save")
-    detective_checked_id = actions.get("detective_check")
-    detective_killed_id = actions.get("detective_kill")
-    mafia_kill_id = actions.get("mafia_kill")
+    # Count votes for each player
+    vote_counts = {}
+    for voted_id in votes.values():
+        vote_counts[voted_id] = vote_counts.get(voted_id, 0) + 1
 
-    # Handle detective kill first if any
-    if detective_killed_id:
-        player = get_player(game, detective_killed_id)
-        if player["alive"]:
-            # Check if doctor saved them
-            if saved_player_id == detective_killed_id:
-                await application.bot.send_message(group_id, "Doctor patched up a victim tonight...")
-            else:
-                player["alive"] = False
-                killed_players.append(player)
-                await application.bot.send_message(group_id, f"🤵🏻 {player['name']} was brutally murdered tonight...")
+    # Find max voted player(s)
+    max_votes = max(vote_counts.values())
+    candidates = [pid for pid, c in vote_counts.items() if c == max_votes]
+    if len(candidates) > 1:
+        # Tie - no lynch
+        await context.bot.send_message(game['group_id'], "The citizens couldn't come up with a decision... They dispersed, lynching nobody today...")
+        return
 
-    # Handle mafia kill
-    if mafia_kill_id:
-        player = get_player(game, mafia_kill_id)
-        if player["alive"]:
-            if saved_player_id == mafia_kill_id:
-                await application.bot.send_message(group_id, "Doctor patched up a victim tonight...")
-            else:
-                player["alive"] = False
-                killed_players.append(player)
-                await application.bot.send_message(group_id, f"🤵🏻 {player['name']} was brutally murdered tonight...")
-
-    # Detective checked someone message
-    if detective_checked_id:
-        checked_player = get_player(game, detective_checked_id)
-        for p in game["players"]:
-            if p["user_id"] == detective_checked_id:
-                try:
-                    await application.bot.send_message(p["user_id"], "Someone is very curious about your role...")
-                except:
-                    pass
-
-    # Notify night summary delay
-    await asyncio.sleep(20)
-
-    # Start voting phase
-    await application.bot.send_message(group_id, "It's mob justice time! Vote for the most suspicious player.\nVoting will last 45 seconds.", reply_markup=InlineKeyboardMarkup(
-        [[InlineKeyboardButton("Vote 🔎", url=f"tg://resolve?domain=YourBotUsername")]]
-    ))
-
-    # Clear night actions
-    game["night_actions"] = {}
-
-# Call this function after all night actions collected and time ended
-# === Part 6/7 ===
-
-from collections import Counter
-
-async def start_lynch_vote(application, game, voted_player_id):
-    group_id = game["group_id"]
-    voted_player = get_player(game, voted_player_id)
-
-    # Send confirmation message with 👍👎 buttons
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("👍", callback_data=f"lynch_confirm_{voted_player_id}"),
-         InlineKeyboardButton("👎", callback_data=f"lynch_cancel_{voted_player_id}")]
-    ])
-    await application.bot.send_message(group_id, f"Are you sure about lynching {voted_player['name']}?", reply_markup=keyboard)
-
-    # Store current lynch vote state
-    game["lynch_vote"] = {
-        "target_id": voted_player_id,
-        "yes_votes": set(),
-        "no_votes": set(),
+    lynch_id = candidates[0]
+    lynch_name = game['players'][lynch_id]['name']
+    # Prepare confirmation message
+    text = f"Are you sure about lynching {lynch_name}?"
+    buttons = [
+        [
+            InlineKeyboardButton(f"👍 0", callback_data=f'confirm_lynch_yes_{lynch_id}'),
+            InlineKeyboardButton(f"👎 0", callback_data=f'confirm_lynch_no_{lynch_id}')
+        ]
+    ]
+    message = await context.bot.send_message(game['group_id'], text, reply_markup=InlineKeyboardMarkup(buttons))
+    # Store confirmation voting data
+    game['lynch_confirmation'] = {
+        'message_id': message.message_id,
+        'yes_votes': set(),
+        'no_votes': set(),
+        'lynch_id': lynch_id,
+        'group_id': game['group_id']
     }
 
-async def process_lynch_vote(application, game, user_id, vote_yes):
-    if "lynch_vote" not in game:
+async def lynch_confirmation_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
+    await query.answer()
+
+    # Parse callback data: confirm_lynch_yes_12345 or confirm_lynch_no_12345
+    parts = data.split('_')
+    if len(parts) != 4:
+        await query.edit_message_text("Invalid lynch confirmation data.")
         return
 
-    lynch = game["lynch_vote"]
-    if vote_yes:
-        lynch["yes_votes"].add(user_id)
-        lynch["no_votes"].discard(user_id)
+    vote_type = parts[2]  # 'yes' or 'no'
+    lynch_id = int(parts[3])
+
+    # Find game by group id and message id
+    game = None
+    for g in active_games.values():
+        if g.get('lynch_confirmation') and g['lynch_confirmation']['lynch_id'] == lynch_id:
+            game = g
+            break
+    if not game:
+        await query.edit_message_text("No lynch confirmation active.")
+        return
+
+    conf = game['lynch_confirmation']
+    if user_id in conf['yes_votes'] or user_id in conf['no_votes']:
+        await query.answer("You already voted in lynch confirmation.", show_alert=True)
+        return
+
+    if vote_type == 'yes':
+        conf['yes_votes'].add(user_id)
     else:
-        lynch["no_votes"].add(user_id)
-        lynch["yes_votes"].discard(user_id)
+        conf['no_votes'].add(user_id)
 
-    # Update message with count of votes (this requires message id - omitted for brevity)
-    # You can update message text here to show vote counts
+    # Update button text with counts
+    yes_count = len(conf['yes_votes'])
+    no_count = len(conf['no_votes'])
+    buttons = [
+        [
+            InlineKeyboardButton(f"👍 {yes_count}", callback_data=f'confirm_lynch_yes_{lynch_id}'),
+            InlineKeyboardButton(f"👎 {no_count}", callback_data=f'confirm_lynch_no_{lynch_id}')
+        ]
+    ]
+    await query.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup(buttons))
 
-async def finalize_lynch(application, game):
-    lynch = game.get("lynch_vote")
-    group_id = game["group_id"]
+    # Check if time or majority reached
+    # For simplicity, no timer here, you can implement job queue to end voting after 30s
+    # Here just a placeholder to call function when enough votes gathered or time elapsed
 
-    yes_count = len(lynch["yes_votes"])
-    no_count = len(lynch["no_votes"])
-    target_id = lynch["target_id"]
-    target_player = get_player(game, target_id)
+    # If yes votes > no votes => lynch
+    # else no lynch and announce accordingly
 
-    if yes_count > no_count:
-        # Lynch succeeds
-        target_player["alive"] = False
-        await application.bot.send_message(group_id, f"{target_player['name']} was lynched! They were a {target_player['role']}.")
+    # This function to be called externally after 30 seconds or votes threshold
 
-        # Announce team death, check win conditions next
-        check_game_end(application, game)
+async def finalize_lynch(game, context):
+    conf = game.get('lynch_confirmation')
+    if not conf:
+        return
+    yes = len(conf['yes_votes'])
+    no = len(conf['no_votes'])
+    lynch_id = conf['lynch_id']
+    lynch_name = game['players'][lynch_id]['name']
 
+    if yes > no:
+        # Lynch player
+        game['players'][lynch_id]['alive'] = False
+        role = game['players'][lynch_id]['role']
+        # Announce lynch
+        text = f"𝗟𝗬𝗡𝗖𝗛𝗘𝗗: {lynch_name} was a {role}."
+        await context.bot.send_message(game['group_id'], text)
     else:
-        await application.bot.send_message(group_id, f"The citizens couldn't come up with a decision ({yes_count} 👍 | {no_count} 👎)... They dispersed, lynching nobody today...")
+        text = f"The citizens couldn't come up with a decision ({yes} 👍 | {no} 👎)... They dispersed, lynching nobody today..."
+        await context.bot.send_message(game['group_id'], text)
+    # Clean up confirmation data
+    game['lynch_confirmation'] = None
+    # === MAFIA NIGHT CHAT ===
 
-    # Clear lynch vote
-    game.pop("lynch_vote", None)
+async def mafia_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Receive mafia chat messages from mafia members in DM and forward to other mafia members with sender name.
+    """
+    user_id = update.message.from_user.id
+    # Find game and check if user is mafia/don/framer and alive
+    game = None
+    for g in active_games.values():
+        p = g['players'].get(user_id)
+        if p and p.get('alive', True) and p['role'] in ['Don', 'Mafia', 'Framer']:
+            game = g
+            break
+    if not game:
+        await update.message.reply_text("You are not part of any active mafia group or not alive.")
+        return
 
-def check_game_end(application, game):
-    # Count alive mafia and townies
-    alive_mafia = [p for p in game["players"] if p["alive"] and p["team"] == "mafia"]
-    alive_town = [p for p in game["players"] if p["alive"] and p["team"] == "town"]
+    sender_name = game['players'][user_id]['name']
+    text = update.message.text
 
-    group_id = game["group_id"]
+    # Forward message to all mafia team except sender
+    for pid, pdata in game['players'].items():
+        if pdata.get('alive', True) and pdata['role'] in ['Don', 'Mafia', 'Framer'] and pid != user_id:
+            try:
+                await context.bot.send_message(pid, f"ᎠᎪᏃᎪᎥ {sender_name}: {text}")
+            except Exception as e:
+                print(f"Failed to send mafia chat to {pid}: {e}")
 
-    if len(alive_mafia) == 0:
-        # Town wins
-        winners = [p for p in game["players"] if p["team"] == "town" and p["alive"]]
-        losers = [p for p in game["players"] if p["team"] == "mafia" or not p["alive"]]
+# === ROLE ACTIONS BUTTONS ===
 
-        asyncio.create_task(announce_game_over(application, game, winners, losers, "Town"))
-        return True
+def get_role_action_buttons(role, game):
+    """
+    Return InlineKeyboardMarkup for role-specific actions during night phase.
+    """
+    alive_players = [p for p in game['players'].values() if p.get('alive', True)]
 
-    if len(alive_mafia) >= len(alive_town):
-        # Mafia wins
-        winners = [p for p in game["players"] if p["team"] == "mafia" and p["alive"]]
-        losers = [p for p in game["players"] if p["team"] == "town" or not p["alive"]]
+    buttons = []
+    if role == 'Doctor':
+        # Doctor picks one to save
+        for p in alive_players:
+            buttons.append([InlineKeyboardButton(p['name'], callback_data=f'doc_save_{p["user_id"]}')])
+    elif role == 'Watcher':
+        # Watcher picks one to watch
+        for p in alive_players:
+            buttons.append([InlineKeyboardButton(p['name'], callback_data=f'watch_{p["user_id"]}')])
+    elif role == 'Framer':
+        # Framer picks one to frame
+        for p in alive_players:
+            buttons.append([InlineKeyboardButton(p['name'], callback_data=f'frame_{p["user_id"]}')])
+    elif role == 'Detective':
+        # Detective action is handled separately (check/kill choice)
+        buttons = []  # Will be dynamic in callback handlers
+    else:
+        buttons = []
 
-        asyncio.create_task(announce_game_over(application, game, winners, losers, "Mafia"))
-        return True
+    return InlineKeyboardMarkup(buttons) if buttons else None
 
-    return False
+# === NIGHT ACTION CALLBACKS ===
 
-async def announce_game_over(application, game, winners, losers, winning_team):
-    group_id = game["group_id"]
+async def doctor_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
+    await query.answer()
 
-    winners_text = "\n".join([f"{p['name']} - {p['role_emoji']} {p['role']}" for p in winners])
-    losers_text = "\n".join([f"{p['name']} - {p['role_emoji']} {p['role']}" for p in losers])
+    if not data.startswith('doc_save_'):
+        await query.edit_message_text("Invalid doctor action.")
+        return
 
-    message = f"""The game is over!
-The victorious team: {winning_team}
+    target_id = int(data.split('_')[2])
+    # Find game and verify user is doctor and alive
+    game = None
+    for g in active_games.values():
+        p = g['players'].get(user_id)
+        if p and p.get('alive', True) and p['role'] == 'Doctor':
+            game = g
+            break
+    if not game:
+        await query.edit_message_text("You are not the doctor or not alive.")
+        return
 
-Winners:
-{winners_text}
+    # Record save target
+    game['night_actions'] = game.get('night_actions', {})
+    game['night_actions']['doctor_save'] = target_id
 
-Other players:
-{losers_text}
+    await query.edit_message_text(f"You chose to save {game['players'][target_id]['name']} tonight.")
 
-Thanks for playing!"""
+async def watcher_watch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
+    await query.answer()
 
-    await application.bot.send_message(group_id, message)
+    if not data.startswith('watch_'):
+        await query.edit_message_text("Invalid watcher action.")
+        return
 
-    # Award coins to winners (you can implement coin logic here)
+    target_id = int(data.split('_')[1])
+    # Find game and verify user is watcher and alive
+    game = None
+    for g in active_games.values():
+        p = g['players'].get(user_id)
+        if p and p.get('alive', True) and p['role'] == 'Watcher':
+            game = g
+            break
+    if not game:
+        await query.edit_message_text("You are not the watcher or not alive.")
+        return
 
-    # Cleanup game data for this group
-    # ...
-# === Part 7/7 ===
+    game['night_actions'] = game.get('night_actions', {})
+    game['night_actions']['watcher_watch'] = target_id
 
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
+    await query.edit_message_text(f"You chose to watch {game['players'][target_id]['name']} tonight.")
 
-async def cancel_game(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    user = update.effective_user
+async def framer_frame_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
+    await query.answer()
 
-    # Only admins can cancel
-    member = await context.bot.get_chat_member(chat_id, user.id)
-    if not member.status in ["administrator", "creator"]:
-        await update.message.reply_text("Only group admins can cancel the game.")
+    if not data.startswith('frame_'):
+        await query.edit_message_text("Invalid framer action.")
+        return
+
+    target_id = int(data.split('_')[1])
+    # Find game and verify user is framer and alive
+    game = None
+    for g in active_games.values():
+        p = g['players'].get(user_id)
+        if p and p.get('alive', True) and p['role'] == 'Framer':
+            game = g
+            break
+    if not game:
+        await query.edit_message_text("You are not the framer or not alive.")
+        return
+
+    game['night_actions'] = game.get('night_actions', {})
+    game['night_actions']['framer_frame'] = target_id
+
+    await query.edit_message_text(f"You chose to frame {game['players'][target_id]['name']} tonight.")
+
+# === DETECTIVE CHECK/KILL FLOW ===
+
+async def detective_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Detective receives buttons to choose Check or Kill.
+    """
+    user_id = update.message.from_user.id
+    # Find game and verify user is detective and alive
+    game = None
+    for g in active_games.values():
+        p = g['players'].get(user_id)
+        if p and p.get('alive', True) and p['role'] == 'Detective':
+            game = g
+            break
+    if not game:
+        await update.message.reply_text("You are not the detective or not alive.")
         return
 
     keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("Confirm Cancel", callback_data="cancel_confirm"),
-         InlineKeyboardButton("Abort", callback_data="cancel_abort")]
+        [InlineKeyboardButton("Check 🕵️‍♂️", callback_data="det_check")],
+        [InlineKeyboardButton("Kill 🔪", callback_data="det_kill")]
     ])
-    await update.message.reply_text("Are you sure you want to cancel the ongoing game?", reply_markup=keyboard)
+    await update.message.reply_text("Choose your action:", reply_markup=keyboard)
 
-async def cancel_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def detective_action_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
     await query.answer()
 
-    group_id = query.message.chat.id
-    # Remove the game if exists
-    if group_id in ongoing_games:
-        del ongoing_games[group_id]
-        await query.edit_message_text("Game cancelled by admin.")
+    if data not in ("det_check", "det_kill"):
+        await query.edit_message_text("Invalid detective action.")
+        return
+
+    # Find game
+    game = None
+    for g in active_games.values():
+        p = g['players'].get(user_id)
+        if p and p.get('alive', True) and p['role'] == 'Detective':
+            game = g
+            break
+    if not game:
+        await query.edit_message_text("You are not the detective or not alive.")
+        return
+
+    alive_players = [p for p in game['players'].values() if p.get('alive', True) and p['user_id'] != user_id]
+
+    buttons = [[InlineKeyboardButton(p['name'], callback_data=f"det_target_{data}_{p['user_id']}")] for p in alive_players]
+    buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="det_back")])
+
+    await query.edit_message_text("Select a target:", reply_markup=InlineKeyboardMarkup(buttons))
+
+async def detective_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await detective_start(update, context)
+
+async def detective_target_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
+    await query.answer()
+
+    # data format: det_target_det_check_userid or det_target_det_kill_userid
+    parts = data.split('_')
+    if len(parts) != 4:
+        await query.edit_message_text("Invalid target selection.")
+        return
+
+    action = parts[2]  # det_check or det_kill
+    target_id = int(parts[3])
+
+    # Find game and verify detective
+    game = None
+    for g in active_games.values():
+        p = g['players'].get(user_id)
+        if p and p.get('alive', True) and p['role'] == 'Detective':
+            game = g
+            break
+    if not game:
+        await query.edit_message_text("You are not the detective or not alive.")
+        return
+
+    if action == 'det_check':
+        target_role = game['players'][target_id]['role']
+        # Maybe fake framing info if framer targeted them
+        framed_id = game.get('night_actions', {}).get('framer_frame')
+        if framed_id == target_id:
+            target_role = "Mafia"  # Framed as mafia
+        await query.edit_message_text(f"{game['players'][target_id]['name']} is a {target_role}.")
+        # Record detective check action for game logs or future usage
+        game.setdefault('night_actions', {})['detective_check'] = target_id
     else:
-        await query.edit_message_text("No active game to cancel.")
+        # Kill action
+        game.setdefault('night_actions', {})['detective_kill'] = target_id
+        await query.edit_message_text(f"You decided to kill {game['players'][target_id]['name']} tonight.")
 
-async def cancel_abort(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# === END OF PART 6 ===
+# === NIGHT PHASE PROCESSING ===
+
+async def process_night_phase(context: ContextTypes.DEFAULT_TYPE):
+    """
+    After night actions are collected or time runs out,
+    process all night actions and update game state.
+    """
+    for game_id, game in list(active_games.items()):
+        night_actions = game.get('night_actions', {})
+
+        # Variables to track night deaths and saves
+        death_candidates = []
+
+        # Mafia kill - for simplicity, mafia collectively choose one target (could be enhanced)
+        mafia_target = night_actions.get('mafia_kill')
+        if mafia_target:
+            death_candidates.append(mafia_target)
+
+        # Detective kill
+        det_kill = night_actions.get('detective_kill')
+        if det_kill:
+            death_candidates.append(det_kill)
+
+        # Doctor save
+        doctor_save = night_actions.get('doctor_save')
+
+        # Framer target - no death, but may affect detective results
+        # Watcher watch - no death
+
+        # Resolve deaths after doctor save
+        final_deaths = []
+        for candidate in death_candidates:
+            if candidate != doctor_save:
+                final_deaths.append(candidate)
+
+        # Mark players as dead
+        for pid in final_deaths:
+            if pid in game['players']:
+                game['players'][pid]['alive'] = False
+
+        # Compose night summary message
+        messages = []
+        if final_deaths:
+            death_names = [game['players'][pid]['name'] for pid in final_deaths]
+            messages.append(f"🌙 Night ended. The following players died: {', '.join(death_names)}")
+        else:
+            messages.append("🌙 Night ended peacefully. No deaths tonight.")
+
+        # Send night summary to group
+        try:
+            await context.bot.send_message(game_id, "\n".join(messages))
+        except Exception as e:
+            print(f"Failed to send night summary to group {game_id}: {e}")
+
+        # Clear night actions for next night
+        game['night_actions'] = {}
+
+        # Check for win conditions after night
+        winner = check_win_conditions(game)
+        if winner:
+            await announce_winner(game, context)
+
+        else:
+            # Proceed to day phase or voting phase as needed
+            await start_day_phase(game, context)
+
+# === WIN CONDITION CHECK ===
+
+def check_win_conditions(game):
+    """
+    Check if either Town (good guys) or Mafia side won.
+    Return winner string: 'Town' or 'Mafia' or None
+    """
+    alive_players = [p for p in game['players'].values() if p.get('alive', True)]
+    mafia_alive = [p for p in alive_players if p['role'] in ['Don', 'Mafia', 'Framer']]
+    town_alive = [p for p in alive_players if p['role'] not in ['Don', 'Mafia', 'Framer']]
+
+    # Town wins if all mafia are dead
+    if not mafia_alive:
+        return 'Town'
+
+    # Mafia wins if mafia >= town
+    if len(mafia_alive) >= len(town_alive):
+        return 'Mafia'
+
+    return None
+
+async def announce_winner(game, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Announce game winner in group and end game.
+    """
+    winner = check_win_conditions(game)
+    group_id = game['group_id']
+    text = f"🏆 Game Over! The {winner} team has won!\n\nFinal roles:\n"
+    for p in game['players'].values():
+        status = "Alive" if p.get('alive', True) else "Dead"
+        text += f"- {p['name']} ({p['role']}) - {status}\n"
+
+    await context.bot.send_message(group_id, text)
+    # Optionally reward winners here (e.g. add coins)
+
+    # Remove game from active_games
+    active_games.pop(group_id, None)
+
+async def start_day_phase(game, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Send message to group that day has started and voting begins.
+    """
+    group_id = game['group_id']
+    await context.bot.send_message(group_id, "☀️ Day has started! Discuss and prepare to vote out suspects. Use /vote command or buttons.")
+
+# === VOTING PHASE ===
+
+async def vote_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handle /vote command: send inline buttons for alive players to vote.
+    """
+    group_id = update.effective_chat.id
+    game = active_games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active game in this group.")
+        return
+
+    alive_players = [p for p in game['players'].values() if p.get('alive', True)]
+
+    buttons = [[InlineKeyboardButton(p['name'], callback_data=f"vote_{p['user_id']}")] for p in alive_players]
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text("Vote to lynch a player:", reply_markup=reply_markup)
+
+async def vote_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handle voting button presses, tally votes.
+    """
     query = update.callback_query
+    voter_id = query.from_user.id
+    data = query.data
     await query.answer()
-    await query.edit_message_text("Cancellation aborted. The game continues.")
+
+    if not data.startswith("vote_"):
+        await query.edit_message_text("Invalid vote.")
+        return
+
+    target_id = int(data.split('_')[1])
+    group_id = query.message.chat.id
+    game = active_games.get(group_id)
+    if not game:
+        await query.edit_message_text("No active game found.")
+        return
+
+    # Check voter is alive
+    if voter_id not in game['players'] or not game['players'][voter_id].get('alive', True):
+        await query.edit_message_text("You are not alive in the game and cannot vote.")
+        return
+
+    # Record vote
+    game.setdefault('votes', {})
+    game['votes'][voter_id] = target_id
+
+    await query.edit_message_text(f"Your vote for {game['players'][target_id]['name']} has been recorded.")
+
+    # Optionally, if all alive players voted, tally votes immediately
+    alive_voters = [p['user_id'] for p in game['players'].values() if p.get('alive', True)]
+    if all(v in game['votes'] for v in alive_voters):
+        await tally_votes(group_id, game, context)
+
+async def tally_votes(group_id, game, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Count votes and lynch player with highest votes.
+    """
+    from collections import Counter
+    vote_counts = Counter(game.get('votes', {}).values())
+    if not vote_counts:
+        await context.bot.send_message(group_id, "No votes cast this day.")
+        return
+
+    max_votes = max(vote_counts.values())
+    candidates = [pid for pid, count in vote_counts.items() if count == max_votes]
+
+    # If tie, no one lynched
+    if len(candidates) > 1:
+        await context.bot.send_message(group_id, "Tie in votes. No one is lynched today.")
+    else:
+        lynched_id = candidates[0]
+        game['players'][lynched_id]['alive'] = False
+        await context.bot.send_message(group_id, f"🔨 {game['players'][lynched_id]['name']} has been lynched!")
+
+    # Clear votes for next day
+    game['votes'] = {}
+
+    # Check win condition after lynch
+    winner = check_win_conditions(game)
+    if winner:
+        await announce_winner(game, context)
+    else:
+        # Start next night phase or continue game
+        await context.bot.send_message(group_id, "Night will fall soon... Prepare for night actions.")
+
+# === MAIN FUNCTION AND HANDLERS SETUP ===
 
 def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("startmafia", startmafia))
-    application.add_handler(CommandHandler("cancel", cancel_game))
+    # Command handlers
+    application.add_handler(CommandHandler('startmafia', startmafia_command))
+    application.add_handler(CommandHandler('cancel', cancel_command))
+    application.add_handler(CommandHandler('vote', vote_command))
+    application.add_handler(CommandHandler('detective', detective_start))
 
-    # CallbackQueryHandlers for cancel confirmation buttons
-    application.add_handler(CallbackQueryHandler(cancel_confirm, pattern="cancel_confirm"))
-    application.add_handler(CallbackQueryHandler(cancel_abort, pattern="cancel_abort"))
+    # Message handlers
+    application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, mafia_chat))
 
-    # Add other handlers: registration, night actions, voting, lynching, mafia chat, etc.
-    # application.add_handler(CallbackQueryHandler(handle_registration, pattern="join_game"))
-    # application.add_handler(CallbackQueryHandler(handle_night_action, pattern="check_.*|kill_.*|save_.*"))
-    # application.add_handler(CallbackQueryHandler(handle_vote, pattern="vote_.*"))
-    # application.add_handler(CallbackQueryHandler(handle_lynch_vote, pattern="lynch_.*"))
-    # application.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_mafia_chat))
+    # Callback query handlers
+    application.add_handler(CallbackQueryHandler(doctor_save_callback, pattern=r'^doc_save_'))
+    application.add_handler(CallbackQueryHandler(watcher_watch_callback, pattern=r'^watch_'))
+    application.add_handler(CallbackQueryHandler(framer_frame_callback, pattern=r'^frame_'))
+    application.add_handler(CallbackQueryHandler(detective_action_choice_callback, pattern=r'^det_(check|kill)$'))
+    application.add_handler(CallbackQueryHandler(detective_target_callback, pattern=r'^det_target_'))
+    application.add_handler(CallbackQueryHandler(detective_back_callback, pattern=r'^det_back$'))
+    application.add_handler(CallbackQueryHandler(vote_callback, pattern=r'^vote_'))
 
+    # Start polling
     application.run_polling()
+
+if __name__ == '__main__':
+    main()
+# === CALLBACKS FOR SPECIAL ROLES ===
+
+async def doctor_save_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data  # format: doc_save_<target_user_id>
+    target_id = int(data.split('_')[-1])
+    await query.answer()
+
+    # Validate doctor role and alive
+    group_id = find_game_by_user(user_id)
+    if not group_id:
+        await query.edit_message_text("You are not in any active game.")
+        return
+    game = active_games[group_id]
+    player = game['players'].get(user_id)
+    if not player or player['role'] != 'Doctor' or not player.get('alive', True):
+        await query.edit_message_text("You cannot perform this action.")
+        return
+
+    # Save the target for doctor save
+    game.setdefault('night_actions', {})
+    game['night_actions']['doctor_save'] = target_id
+
+    await query.edit_message_text(f"You have decided to save {game['players'][target_id]['name']} tonight.")
+
+async def watcher_watch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data  # format: watch_<target_user_id>
+    target_id = int(data.split('_')[-1])
+    await query.answer()
+
+    # Validate watcher role and alive
+    group_id = find_game_by_user(user_id)
+    if not group_id:
+        await query.edit_message_text("You are not in any active game.")
+        return
+    game = active_games[group_id]
+    player = game['players'].get(user_id)
+    if not player or player['role'] != 'Watcher' or not player.get('alive', True):
+        await query.edit_message_text("You cannot perform this action.")
+        return
+
+    # Save the target for watcher watch
+    game.setdefault('night_actions', {})
+    game['night_actions']['watcher_watch'] = target_id
+
+    await query.edit_message_text(f"You have decided to watch {game['players'][target_id]['name']} tonight.")
+
+async def framer_frame_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data  # format: frame_<target_user_id>
+    target_id = int(data.split('_')[-1])
+    await query.answer()
+
+    # Validate framer role and alive
+    group_id = find_game_by_user(user_id)
+    if not group_id:
+        await query.edit_message_text("You are not in any active game.")
+        return
+    game = active_games[group_id]
+    player = game['players'].get(user_id)
+    if not player or player['role'] != 'Framer' or not player.get('alive', True):
+        await query.edit_message_text("You cannot perform this action.")
+        return
+
+    # Save the target for framing
+    game.setdefault('night_actions', {})
+    game['night_actions']['framer_frame'] = target_id
+
+    await query.edit_message_text(f"You have decided to frame {game['players'][target_id]['name']} tonight.")
+
+# === DETECTIVE ACTION CALLBACKS ===
+
+async def detective_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    group_id = find_game_by_user(user_id)
+    if not group_id:
+        await update.message.reply_text("You are not part of any active game.")
+        return
+    game = active_games[group_id]
+    player = game['players'].get(user_id)
+    if not player or player['role'] != 'Detective' or not player.get('alive', True):
+        await update.message.reply_text("You cannot perform detective actions.")
+        return
+
+    buttons = [
+        [InlineKeyboardButton("Check 🕵️‍♂️", callback_data="det_check")],
+        [InlineKeyboardButton("Kill 🔪", callback_data="det_kill")],
+    ]
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await update.message.reply_text("Choose an action:", reply_markup=reply_markup)
+
+async def detective_action_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    action = query.data.split('_')[1]  # 'check' or 'kill'
+    await query.answer()
+
+    group_id = find_game_by_user(user_id)
+    if not group_id:
+        await query.edit_message_text("No active game found.")
+        return
+    game = active_games[group_id]
+    player = game['players'].get(user_id)
+    if not player or player['role'] != 'Detective' or not player.get('alive', True):
+        await query.edit_message_text("You cannot perform this action.")
+        return
+
+    alive_targets = [p for p in game['players'].values() if p.get('alive', True) and p['user_id'] != user_id]
+
+    buttons = [[InlineKeyboardButton(p['name'], callback_data=f"det_target_{p['user_id']}")] for p in alive_targets]
+    buttons.append([InlineKeyboardButton("⬅️ Back", callback_data="det_back")])
+    reply_markup = InlineKeyboardMarkup(buttons)
+
+    # Save chosen action temporarily in user context
+    context.user_data['det_action'] = action
+
+    await query.edit_message_text(f"Select a player to {action}:", reply_markup=reply_markup)
+
+async def detective_target_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    data = query.data
+    await query.answer()
+
+    target_id = int(data.split('_')[-1])
+    action = context.user_data.get('det_action')
+    if not action:
+        await query.edit_message_text("Please choose an action first.")
+        return
+
+    group_id = find_game_by_user(user_id)
+    if not group_id:
+        await query.edit_message_text("No active game found.")
+        return
+    game = active_games[group_id]
+    player = game['players'].get(user_id)
+    if not player or player['role'] != 'Detective' or not player.get('alive', True):
+        await query.edit_message_text("You cannot perform this action.")
+        return
+
+    if action == 'check':
+        # Reveal role info to detective
+        role = game['players'][target_id]['role']
+        # Consider framing effect here if implemented
+        await query.edit_message_text(f"{game['players'][target_id]['name']}'s role is: {role}")
+        # Reset action
+        context.user_data.pop('det_action', None)
+    elif action == 'kill':
+        # Mark detective kill target
+        game.setdefault('night_actions', {})
+        game['night_actions']['detective_kill'] = target_id
+        await query.edit_message_text(f"You have chosen to kill {game['players'][target_id]['name']} tonight.")
+        context.user_data.pop('det_action', None)
+    else:
+        await query.edit_message_text("Unknown action.")
+
+async def detective_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    buttons = [
+        [InlineKeyboardButton("Check 🕵️‍♂️", callback_data="det_check")],
+        [InlineKeyboardButton("Kill 🔪", callback_data="det_kill")],
+    ]
+    reply_markup = InlineKeyboardMarkup(buttons)
+    await query.edit_message_text("Choose an action:", reply_markup=reply_markup)
+
+# === UTILITY FUNCTIONS ===
+
+def find_game_by_user(user_id: int):
+    """
+    Find group ID where user is playing in active games.
+    """
+    for gid, game in active_games.items():
+        if user_id in game['players']:
+            return gid
+    return None
+
+# === MAFIA TEAM CHAT ===
+
+async def mafia_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles mafia team chat messages sent in private DM.
+    """
+    user_id = update.effective_user.id
+    text = update.message.text
+    group_id = find_game_by_user(user_id)
+    if not group_id:
+        await update.message.reply_text("You are not part of any active game.")
+        return
+    game = active_games[group_id]
+    player = game['players'].get(user_id)
+    if player['role'] not in ['Don', 'Mafia', 'Framer'] or not player.get('alive', True):
+        await update.message.reply_text("Only alive Mafia members can use mafia chat.")
+        return
+
+    # Send message to all mafia players alive except sender
+    for pid, p in game['players'].items():
+        if p['role'] in ['Don', 'Mafia', 'Framer'] and p.get('alive', True) and pid != user_id:
+            try:
+                await context.bot.send_message(pid, f"[Mafia Chat] {player['name']}: {text}")
+            except:
+                pass
+
+    await update.message.reply_text("Message sent to Mafia team.")
+# === END NIGHT PHASE AND START VOTING PHASE ===
+
+async def resolve_night_actions(context: ContextTypes.DEFAULT_TYPE, group_id: int):
+    game = active_games[group_id]
+    night = game.get('night_actions', {})
+
+    killed = set()
+    saved = night.get('doctor_save')
+    framed = night.get('framer_frame')
+    detective_kill = night.get('detective_kill')
+
+    # Mafia kill target (assume stored as mafia_kill in night_actions)
+    mafia_kill = night.get('mafia_kill')
+
+    # Process kills considering doctor save
+    if mafia_kill and mafia_kill != saved:
+        killed.add(mafia_kill)
+    if detective_kill and detective_kill != saved:
+        killed.add(detective_kill)
+
+    # Process framing (if any special logic)
+    if framed:
+        # Mark framed player - could influence detective check later
+        game['players'][framed]['framed'] = True
+
+    # Kill all players in killed set
+    for uid in killed:
+        game['players'][uid]['alive'] = False
+
+    # Announce night results
+    chat_id = group_id
+    if killed:
+        killed_names = ', '.join([game['players'][uid]['name'] for uid in killed])
+        await context.bot.send_message(chat_id, f"Night is over.\nThe following players were killed:\n{killed_names}")
+    else:
+        await context.bot.send_message(chat_id, "Night is over.\nNo one died tonight.")
+
+    # Clear night actions
+    game['night_actions'] = {}
+
+    # Check if game over
+    winners = check_game_winner(game)
+    if winners:
+        await announce_winners(context, chat_id, winners)
+        del active_games[group_id]
+        return
+
+    # Start voting phase (lynch)
+    game['phase'] = 'voting'
+    game['votes'] = {}
+    await start_voting_phase(context, group_id)
+
+async def start_voting_phase(context: ContextTypes.DEFAULT_TYPE, group_id: int):
+    game = active_games[group_id]
+    chat_id = group_id
+
+    alive_players = [p for p in game['players'].values() if p.get('alive', True)]
+    buttons = []
+    for p in alive_players:
+        buttons.append([InlineKeyboardButton(p['name'], callback_data=f"vote_{p['user_id']}")])
+    reply_markup = InlineKeyboardMarkup(buttons)
+
+    await context.bot.send_message(chat_id, "Voting time! Choose a player to lynch:", reply_markup=reply_markup)
+
+async def vote_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    group_id = find_game_by_user(user_id)
+    if not group_id:
+        await query.answer("You are not in an active game.")
+        return
+    game = active_games[group_id]
+    if game.get('phase') != 'voting':
+        await query.answer("Voting is not active right now.")
+        return
+
+    vote_target_id = int(query.data.split('_')[1])
+    player = game['players'].get(user_id)
+    if not player or not player.get('alive', True):
+        await query.answer("You are not alive to vote.")
+        return
+
+    game['votes'][user_id] = vote_target_id
+    await query.answer(f"You voted for {game['players'][vote_target_id]['name']}.")
+
+    # Optionally update vote counts message or wait till voting time ends
+
+async def end_voting_phase(context: ContextTypes.DEFAULT_TYPE, group_id: int):
+    game = active_games[group_id]
+    chat_id = group_id
+
+    votes = game.get('votes', {})
+    if not votes:
+        await context.bot.send_message(chat_id, "No votes were cast. No one is lynched.")
+        return
+
+    # Count votes
+    vote_counts = {}
+    for voter, target in votes.items():
+        vote_counts[target] = vote_counts.get(target, 0) + 1
+
+    max_votes = max(vote_counts.values())
+    candidates = [uid for uid, count in vote_counts.items() if count == max_votes]
+
+    if len(candidates) > 1:
+        # Tie, no lynch
+        await context.bot.send_message(chat_id, "Vote tie! No one is lynched this round.")
+    else:
+        lynched_id = candidates[0]
+        game['players'][lynched_id]['alive'] = False
+        await context.bot.send_message(chat_id, f"{game['players'][lynched_id]['name']} has been lynched by the town!")
+
+    # Clear votes
+    game['votes'] = {}
+
+    # Check if game over
+    winners = check_game_winner(game)
+    if winners:
+        await announce_winners(context, chat_id, winners)
+        del active_games[group_id]
+        return
+
+    # Start next night phase
+    game['phase'] = 'night'
+    await context.bot.send_message(chat_id, "Night phase started. Mafia, do your moves.")
+
+def check_game_winner(game):
+    """
+    Checks game end conditions.
+    Returns 'Town', 'Mafia' or None.
+    """
+    alive = [p for p in game['players'].values() if p.get('alive', True)]
+    mafia_alive = [p for p in alive if p['role'] in ['Don', 'Mafia', 'Framer']]
+    town_alive = [p for p in alive if p['role'] not in ['Don', 'Mafia', 'Framer']]
+
+    if not mafia_alive:
+        return 'Town'
+    if len(mafia_alive) >= len(town_alive):
+        return 'Mafia'
+    return None
+
+async def announce_winners(context: ContextTypes.DEFAULT_TYPE, chat_id: int, winners: str):
+    text = f"Game Over! The winners are: {winners}\n\nFinal roles:\n"
+    game = active_games[chat_id]
+    for p in game['players'].values():
+        status = "Alive" if p.get('alive', True) else "Dead"
+        text += f"{p['name']} - {p['role']} ({status})\n"
+    await context.bot.send_message(chat_id, text)
+
+    # Award coins to alive winners (dummy example)
+    for p in game['players'].values():
+        if p.get('alive', True) and ((winners == 'Town' and p['role'] not in ['Don', 'Mafia', 'Framer']) or (winners == 'Mafia' and p['role'] in ['Don', 'Mafia', 'Framer'])):
+            # Here you would add code to add coins to the user in your DB
+            pass
+
+# === HANDLERS REGISTRATION ===
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+    app.add_handler(CommandHandler("startmafia", start_mafia_command))
+    app.add_handler(CommandHandler("cancel", cancel_command))
+    app.add_handler(CallbackQueryHandler(confirm_cancel_callback, pattern=r"^confirm_cancel_"))
+    app.add_handler(CallbackQueryHandler(register_callback, pattern=r"^register$"))
+    app.add_handler(CallbackQueryHandler(start_game_callback, pattern=r"^start_game$"))
+
+    app.add_handler(CallbackQueryHandler(mafia_kill_callback, pattern=r"^mafia_kill_"))
+    app.add_handler(CallbackQueryHandler(doctor_save_callback, pattern=r"^doc_save_"))
+    app.add_handler(CallbackQueryHandler(watcher_watch_callback, pattern=r"^watch_"))
+    app.add_handler(CallbackQueryHandler(framer_frame_callback, pattern=r"^frame_"))
+    app.add_handler(CallbackQueryHandler(detective_action_choice_callback, pattern=r"^det_(check|kill|target|back)"))
+    app.add_handler(CallbackQueryHandler(vote_callback, pattern=r"^vote_"))
+    app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE & (~filters.COMMAND), mafia_chat))
+
+    # Add other handlers as necessary
+
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
