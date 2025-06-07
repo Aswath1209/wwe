@@ -161,6 +161,28 @@ def leaderboard_markup(current="coins"):
         return InlineKeyboardMarkup([
             [InlineKeyboardButton("Show Coins 💰", callback_data="leaderboard_coins")]
         ])
+
+async def leaderboard_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    if data == "leaderboard_coins":
+        sorted_users = sorted(USERS.values(), key=lambda u: u.get("coins", 0), reverse=True)
+        text = "🏆 Top 10 Players by Coins:\n\n"
+        for i, u in enumerate(sorted_users[:10], 1):
+            text += f"{i}. {u.get('name', 'Unknown')} - {u.get('coins', 0)} 💰\n"
+        markup = leaderboard_markup("coins")
+    elif data == "leaderboard_wins":
+        sorted_users = sorted(USERS.values(), key=lambda u: u.get("wins", 0), reverse=True)
+        text = "🏆 Top 10 Players by Wins:\n\n"
+        for i, u in enumerate(sorted_users[:10], 1):
+            text += f"{i}. {u.get('name', 'Unknown')} - {u.get('wins', 0)} 🏆\n"
+        markup = leaderboard_markup("wins")
+    else:
+        await query.answer()
+        return
+    await query.message.edit_text(text, reply_markup=markup)
+    await query.answer()
+    
     
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
