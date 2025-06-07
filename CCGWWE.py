@@ -92,6 +92,35 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Welcome to HandCricket, {USERS[user.id]['name']}!\n"
         "Use /register to get 4000💰 coins."
     )
+async def send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user(user)
+    if not update.message.reply_to_message:
+        await update.message.reply_text("Reply to a user's message to send coins.")
+        return
+    args = context.args
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Usage: /send <amount> (reply to user)")
+        return
+    amount = int(args[0])
+    if amount <= 0:
+        await update.message.reply_text("Please enter a positive amount.")
+        return
+    sender = USERS[user.id]
+    if sender["coins"] < amount:
+        await update.message.reply_text(f"You don't have enough coins to send {amount}💰.")
+        return
+    receiver_user = update.message.reply_to_message.from_user
+    ensure_user(receiver_user)
+    receiver = USERS[receiver_user.id]
+    sender["coins"] -= amount
+    receiver["coins"] += amount
+    await save_user(user.id)
+    await save_user(receiver_user.id)
+    await update.message.reply_text(
+        f"✅ {user.first_name} sent {amount}💰 to {receiver['name']}."
+    )
+    
 
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
