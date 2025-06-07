@@ -120,8 +120,30 @@ async def send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"✅ {user.first_name} sent {amount}💰 to {receiver['name']}."
     )
-    
 
+async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text("Usage: /add <user_id> <amount>")
+        return
+    try:
+        target_user_id = int(args[0])
+        amount = int(args[1])
+        if amount <= 0:
+            await update.message.reply_text("Amount must be positive.")
+            return
+    except ValueError:
+        await update.message.reply_text("Invalid user ID or amount.")
+        return
+    ensure_user(type("User", (), {"id": target_user_id})())
+    USERS[target_user_id]["coins"] += amount
+    await save_user(target_user_id)
+    await update.message.reply_text(f"✅ Added {amount}💰 to user {USERS[target_user_id]['name']}.")
+    
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user(user)
