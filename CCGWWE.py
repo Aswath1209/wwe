@@ -990,7 +990,7 @@ def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Command handlers
-    application.add_handler(CommandHandler('start_mafia', start_mafia_command))
+    app.add_handler(CommandHandler("start_mafia", start_mafia_command))
     application.add_handler(CommandHandler('cancel', cancel_command))
     application.add_handler(CommandHandler('vote', vote_command))
     application.add_handler(CommandHandler('detective', detective_start))
