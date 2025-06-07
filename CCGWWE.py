@@ -143,6 +143,24 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     USERS[target_user_id]["coins"] += amount
     await save_user(target_user_id)
     await update.message.reply_text(f"✅ Added {amount}💰 to user {USERS[target_user_id]['name']}.")
+
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ensure_user(update.effective_user)
+    sorted_users = sorted(USERS.values(), key=lambda u: u.get("coins", 0), reverse=True)
+    text = "🏆 Top 10 Players by Coins:\n\n"
+    for i, u in enumerate(sorted_users[:10], 1):
+        text += f"{i}. {u.get('name', 'Unknown')} - {u.get('coins', 0)} 💰\n"
+    await update.message.reply_text(text, reply_markup=leaderboard_markup("coins"))
+
+def leaderboard_markup(current="coins"):
+    if current == "coins":
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("Show Wins 🏆", callback_data="leaderboard_wins")]
+        ])
+    else:
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("Show Coins 💰", callback_data="leaderboard_coins")]
+        ])
     
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
