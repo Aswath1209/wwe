@@ -112,7 +112,7 @@ active_games = {}  # chat_id: game_data
 
 # === COMMAND HANDLERS ===
 
-async def startmafia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def star_tmafia(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
 
@@ -990,7 +990,7 @@ def main():
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
     # Command handlers
-    application.add_handler(CommandHandler('startmafia', startmafia_command))
+    application.add_handler(CommandHandler('start_mafia', start_mafia_command))
     application.add_handler(CommandHandler('cancel', cancel_command))
     application.add_handler(CommandHandler('vote', vote_command))
     application.add_handler(CommandHandler('detective', detective_start))
@@ -1380,7 +1380,7 @@ async def announce_winners(context: ContextTypes.DEFAULT_TYPE, chat_id: int, win
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("startmafia", start_mafia_command))
+    app.add_handler(CommandHandler("start_mafia", start_mafia_command))
     app.add_handler(CommandHandler("cancel", cancel_command))
     app.add_handler(CallbackQueryHandler(confirm_cancel_callback, pattern=r"^confirm_cancel_"))
     app.add_handler(CallbackQueryHandler(register_callback, pattern=r"^register$"))
