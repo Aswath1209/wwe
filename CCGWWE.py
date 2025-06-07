@@ -112,7 +112,7 @@ active_games = {}  # chat_id: game_data
 
 # === COMMAND HANDLERS ===
 
-async def star_tmafia(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start_mafia(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
 
