@@ -569,7 +569,7 @@ def main():
     global application
     application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    application.add_handler(CommandHandler("startmafia", start_mafia_command))
+    application.add_handler(CommandHandler("startmafia", startmafia_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
     application.add_handler(CallbackQueryHandler(handle_registration, pattern=r"^register:"))
     application.add_handler(CallbackQueryHandler(handle_role_choice, pattern=r"^rolechoice:"))
