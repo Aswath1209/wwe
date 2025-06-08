@@ -1,8 +1,7 @@
 import logging
 import random
 import uuid
-import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
@@ -166,6 +165,31 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_user(target_user_id)
     await update.message.reply_text(f"✅ Added {amount}💰 to user {USERS[target_user_id]['name']}.")
 
+# --- Daily command ---
+
+async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user(user)
+    user_data = USERS[user.id]
+    now = datetime.utcnow()
+    last_daily = user_data.get("last_daily")
+    if last_daily:
+        last_daily_dt = datetime.fromisoformat(last_daily)
+        if now - last_daily_dt < timedelta(hours=24):
+            remaining = timedelta(hours=24) - (now - last_daily_dt)
+            hours, remainder = divmod(remaining.seconds, 3600)
+            minutes, _ = divmod(remainder, 60)
+            await update.message.reply_text(
+                f"⏳ You have already claimed your daily reward.\n"
+                f"Come back in {hours}h {minutes}m."
+            )
+            return
+    reward = random.randint(100, 500)
+    user_data["coins"] += reward
+    user_data["last_daily"] = now.isoformat()
+    await save_user(user.id)
+    await update.message.reply_text(f"🎉 You received your daily reward of {reward}💰!")
+
 # --- Leaderboard ---
 
 def leaderboard_markup(current="coins"):
@@ -215,6 +239,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/profile - View your profile\n"
         "/send - Send coins (reply to user)\n"
         "/add - Admin: add coins\n"
+        "/daily - Claim daily coins reward\n"
         "/leaderboard - View top players\n"
         "/ccl <bet amount> - Start a CCL match in group (bet optional)\n"
         "/endmatch - Admin: end ongoing CCL match in group\n"
@@ -319,7 +344,7 @@ COMMENTARY = {
     ],
 }
 
-# --- Helper keyboards ---
+# --- Keyboards ---
 
 def toss_keyboard(match_id):
     return InlineKeyboardMarkup([
@@ -448,7 +473,6 @@ async def ccl_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if USER_CCL_MATCH.get(user.id):
         await query.answer("You are already in a CCL match.", show_alert=True)
         return
-    # Check bet amount affordability
     bet_amount = match.get("bet_amount", 0)
     if bet_amount > 0 and USERS[user.id]["coins"] < bet_amount:
         await query.answer(f"You don't have enough coins to join this {bet_amount}💰 bet match.", show_alert=True)
@@ -587,7 +611,7 @@ async def ccl_batbowl_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     await query.answer()
 
-# --- Batting and bowling text handlers ---
+# --- Batsman and Bowler text handlers ---
 
 async def batsman_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -706,7 +730,23 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
             match["century_announced"] = False
             await context.bot.send_message(chat_id=chat_id, text=f"Innings break! Target for second innings: {match['target']}")
         else:
-            await finish_match(context, match, winner=match["bowling_user"])
+            # Tie check fix:
+            if match["score"] == match["target"] - 1:
+                await context.bot.send_message(chat_id=chat_id, text="🤝 The match is a tie!")
+                USERS[match["batting_user"]]["ties"] += 1
+                USERS[match["bowling_user"]]["ties"] += 1
+                await save_user(match["batting_user"])
+                await save_user(match["bowling_user"])
+            elif match["score"] >= match["target"]:
+                await finish_match(context, match, winner=match["batting_user"])
+                return
+            else:
+                await finish_match(context, match, winner=match["bowling_user"])
+                return
+            USER_CCL_MATCH[match["batting_user"]] = None
+            USER_CCL_MATCH[match["bowling_user"]] = None
+            GROUP_CCL_MATCH.pop(chat_id, None)
+            CCL_MATCHES.pop(match["match_id"], None)
             return
     else:
         if match["score"] >= 50 and not match["half_century_announced"]:
@@ -736,6 +776,8 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
 
 # --- Finish match and update stats ---
 
+# --- Finish match and update stats ---
+
 async def finish_match(context: ContextTypes.DEFAULT_TYPE, match, winner):
     chat_id = match["group_id"]
     initiator = match["initiator"]
@@ -747,7 +789,6 @@ async def finish_match(context: ContextTypes.DEFAULT_TYPE, match, winner):
     USERS[winner]["wins"] += 1
     USERS[loser]["losses"] += 1
 
-    # Handle bet coin transfer
     if bet_amount > 0:
         USERS[winner]["coins"] += bet_amount
         USERS[loser]["coins"] -= bet_amount
@@ -762,8 +803,6 @@ async def finish_match(context: ContextTypes.DEFAULT_TYPE, match, winner):
     USER_CCL_MATCH[opponent] = None
     GROUP_CCL_MATCH.pop(chat_id, None)
     CCL_MATCHES.pop(match["match_id"], None)
-
-# --- /endmatch command for admins ---
 
 # --- /endmatch command for admins ---
 
@@ -790,8 +829,6 @@ async def endmatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     GROUP_CCL_MATCH.pop(chat.id, None)
     CCL_MATCHES.pop(match_id, None)
     await update.message.reply_text("The ongoing CCL match has been ended by an admin.")
-
-# --- (You can add other handlers or utility functions below if needed) ---
 import logging
 from telegram.ext import (
     ApplicationBuilder,
