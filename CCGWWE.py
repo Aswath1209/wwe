@@ -1,7 +1,8 @@
 import logging
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, ChatAction
+    Update, InlineKeyboardButton, InlineKeyboardMarkup
 )
+from telegram.constants import ChatAction
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
     CallbackQueryHandler, MessageHandler, filters
@@ -9,7 +10,6 @@ from telegram.ext import (
 from pymongo import MongoClient
 import random
 import asyncio
-
 # ====== CONFIG ======
 BOT_TOKEN = '8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM'
 MONGO_URL = 'mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853'
