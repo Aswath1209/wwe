@@ -3,11 +3,7 @@ import random
 import uuid
 from datetime import datetime
 
-from telegram import (
-    Update,
-    InlineKeyboardMarkup,
-    InlineKeyboardButton,
-)
+from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -38,10 +34,9 @@ logger = logging.getLogger(__name__)
 
 # --- Global Data Stores ---
 USERS = {}  # user_id -> user data dict
-
-CCL_MATCHES = {}         # match_id -> match dict
-USER_CCL_MATCH = {}      # user_id -> match_id (one match per user)
-GROUP_CCL_MATCH = {}     # group_chat_id -> match_id (one match per group)
+CCL_MATCHES = {}  # match_id -> match dict
+USER_CCL_MATCH = {}  # user_id -> match_id
+GROUP_CCL_MATCH = {}  # group_chat_id -> match_id
 
 # --- Helper Functions ---
 
@@ -85,14 +80,13 @@ async def load_users():
     except Exception as e:
         logger.error(f"Error loading users: {e}", exc_info=True)
 
-# --- Command Handlers ---
+# --- Basic Commands ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user(user)
     await update.message.reply_text(
-        f"Welcome to HandCricket, {USERS[user.id]['name']}!\n"
-        "Use /register to get 4000💰 coins."
+        f"Welcome to HandCricket, {USERS[user.id]['name']}!\nUse /register to get 4000💰 coins."
     )
 
 async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -171,7 +165,8 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_user(target_user_id)
     await update.message.reply_text(f"✅ Added {amount}💰 to user {USERS[target_user_id]['name']}.")
 
-# --- Leaderboard with page switching ---
+# --- Leaderboard ---
+
 def leaderboard_markup(current="coins"):
     if current == "coins":
         return InlineKeyboardMarkup([
@@ -228,6 +223,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 import asyncio
 import logging
 import random
+import uuid
 
 from telegram import InlineKeyboardMarkup, InlineKeyboardButton, Update
 from telegram.ext import ContextTypes
@@ -235,15 +231,15 @@ from telegram.ext import ContextTypes
 # --- Constants ---
 
 BOWLER_MAP = {
-    "0": "RS",
-    "1": "Bouncer",
-    "2": "Yorker",
-    "3": "Short",
-    "4": "Slower",
-    "6": "Knuckle"
+    "RS": "0",
+    "Bouncer": "1",
+    "Yorker": "2",
+    "Short": "3",
+    "Slower": "4",
+    "Knuckle": "6"
 }
 
-BATSMAN_OPTIONS = ["0", "1", "2", "3", "4", "6"]
+BATSMAN_OPTIONS = {"0", "1", "2", "3", "4", "6"}
 
 CCL_GIFS = {
     "0": [
@@ -527,8 +523,8 @@ async def ccl_batbowl_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.send_message(
             chat_id=match["bowling_user"],
             text=(
-                "⚾ You're bowling! Send your delivery number as text:\n"
-                "RS=0, Bouncer=1, Yorker=2, Short=3, Slower=4, Knuckle=6"
+                "⚾ You're bowling! Send your delivery as text:\n"
+                "RS, Bouncer, Yorker, Short, Slower, Knuckle"
             )
         )
     except Exception as e:
@@ -582,17 +578,24 @@ async def bowler_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     if user.id != match["bowling_user"]:
         return
-    if text not in BOWLER_MAP.keys():
+
+    # Accept bowler input case-insensitive and normalize
+    valid_deliveries = {k.lower(): k for k in BOWLER_MAP.keys()}
+    if text.lower() not in valid_deliveries:
         await update.message.reply_text(
             "❌ Invalid delivery! Please send one of:\n"
-            "RS=0, Bouncer=1, Yorker=2, Short=3, Slower=4, Knuckle=6"
+            "RS, Bouncer, Yorker, Short, Slower, Knuckle"
         )
         return
+
+    normalized_text = valid_deliveries[text.lower()]
+
     if match["bowl_choice"] is not None:
         await update.message.reply_text("⚠️ You already sent your delivery for this ball.")
         return
-    match["bowl_choice"] = text
-    await update.message.reply_text(f"✅ You chose: {text} ({BOWLER_MAP[text]})")
+
+    match["bowl_choice"] = normalized_text
+    await update.message.reply_text(f"✅ You chose: {normalized_text}")
     await remind_both_players(context, match)
     await check_both_choices_and_process(context, match)
 
@@ -608,7 +611,7 @@ async def remind_both_players(context: ContextTypes.DEFAULT_TYPE, match):
         if match["bowl_choice"] is None:
             await context.bot.send_message(
                 chat_id=match["bowling_user"],
-                text="⚾ Please send your delivery number (RS=0, Bouncer=1, Yorker=2, Short=3, Slower=4, Knuckle=6)."
+                text="⚾ Please send your delivery as one of:\nRS, Bouncer, Yorker, Short, Slower, Knuckle"
             )
     except Exception as e:
         logging.error(f"Error sending reminder DM: {e}")
@@ -624,7 +627,8 @@ async def check_both_choices_and_process(context: ContextTypes.DEFAULT_TYPE, mat
 async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
     chat_id = match["group_id"]
     bat_num = match["bat_choice"]
-    bowl_num = match["bowl_choice"]
+    bowl_str = match["bowl_choice"]
+    bowl_num = BOWLER_MAP[bowl_str]
 
     # Clear choices for next ball
     match["bat_choice"] = None
@@ -634,12 +638,12 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
     over = (match["balls"] - 1) // 6
     ball_in_over = (match["balls"] - 1) % 6 + 1
 
-    # Out condition: bowler chooses Yorker (2) and batsman chooses 2 OR both choose same number
+    # Out condition: bowler bowls Yorker ("2") and batsman plays "2" OR both choices match numerically
     is_out = (bowl_num == "2" and bat_num == "2") or (bowl_num == bat_num)
 
     await context.bot.send_message(chat_id=chat_id, text=f"Over {over + 1}\nBall {ball_in_over}")
     await asyncio.sleep(2)
-    await context.bot.send_message(chat_id=chat_id, text=f"{USERS[match['bowling_user']]['name']} bowls {BOWLER_MAP[bowl_num]}")
+    await context.bot.send_message(chat_id=chat_id, text=f"{USERS[match['bowling_user']]['name']} bowls {bowl_str}")
 
     await asyncio.sleep(3)
 
@@ -691,7 +695,7 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
         )
         await context.bot.send_message(
             chat_id=match["bowling_user"],
-            text="⚾ Send your delivery number (RS=0, Bouncer=1, Yorker=2, Short=3, Slower=4, Knuckle=6):"
+            text="⚾ Send your delivery as one of:\nRS, Bouncer, Yorker, Short, Slower, Knuckle"
         )
     except Exception as e:
         logging.error(f"Error sending DM prompts: {e}")
@@ -757,7 +761,7 @@ from telegram.ext import (
 
 logger = logging.getLogger(__name__)
 
-# --- Assume these variables and functions are defined in Parts 1 & 2 ---
+# --- Assume these functions and variables are defined in Parts 1 & 2 ---
 # USERS, USER_CCL_MATCH, CCL_MATCHES, GROUP_CCL_MATCH
 # ensure_user, save_user, load_users
 # start, register, profile, send, add
