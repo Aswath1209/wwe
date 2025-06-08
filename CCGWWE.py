@@ -949,6 +949,8 @@ def register_handlers(application):
 
     # Admin command to end match
     application.add_handler(CommandHandler("endmatch", endmatch))
+    application.add_handler(CommandHandler("broad", broad))
+    
 
 async def on_startup(app):
     await load_users()
