@@ -18,7 +18,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 # --- Configuration ---
 BOT_TOKEN = "8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM"
 MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"
-ADMIN_IDS = {123456789}  # Replace with your Telegram user ID(s)
+ADMIN_IDS = {7361215114}  # Replace with your Telegram user ID(s)
 
 # --- MongoDB Setup ---
 mongo_client = AsyncIOMotorClient(MONGO_URL)
@@ -202,7 +202,52 @@ async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_user(user.id)
     await update.message.reply_text(f"🎉 You received your daily reward of {reward}🪙!")
     
-            
+import asyncio
+import logging
+from telegram import Update
+from telegram.ext import ContextTypes
+
+# List of admin user IDs allowed to broadcast
+ADMIN_IDS = [7361215114]  # Replace with your Telegram user IDs
+
+async def broad(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ You are not authorized to use this command.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /broad <message>")
+        return
+
+    message_text = " ".join(context.args)
+    count_success = 0
+    count_failed = 0
+
+    await update.message.reply_text(f"Broadcast started. Sending message to users and groups...")
+
+    # Broadcast to all users (private chats)
+    for user_id in USERS.keys():
+        try:
+            await context.bot.send_message(chat_id=user_id, text=message_text)
+            count_success += 1
+            await asyncio.sleep(0.1)  # small delay to avoid flooding
+        except Exception as e:
+            logging.warning(f"Failed to send to user {user_id}: {e}")
+            count_failed += 1
+
+    # Broadcast to all groups
+    for group_id in GROUP_CCL_MATCH.keys():
+        try:
+            await context.bot.send_message(chat_id=group_id, text=message_text)
+            count_success += 1
+            await asyncio.sleep(0.1)
+        except Exception as e:
+            logging.warning(f"Failed to send to group {group_id}: {e}")
+            count_failed += 1
+
+    await update.message.reply_text(f"Broadcast completed.\nSuccess: {count_success}\nFailed: {count_failed}")
+    
 
 # --- Leaderboard ---
 
