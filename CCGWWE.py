@@ -305,6 +305,53 @@ COMMENTARY = {
 }
 
 # --- Helper keyboards ---
+async def ccl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    ensure_user(user)
+
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("CCL matches can only be started in groups.")
+        return
+
+    if GROUP_CCL_MATCH.get(chat.id):
+        await update.message.reply_text("There is already an ongoing CCL match in this group.")
+        return
+
+    if USER_CCL_MATCH.get(user.id):
+        await update.message.reply_text("You are already participating in a CCL match.")
+        return
+
+    match_id = str(uuid.uuid4())
+    match = {
+        "match_id": match_id,
+        "group_id": chat.id,
+        "initiator": user.id,
+        "opponent": None,
+        "state": "waiting_for_opponent",
+        "toss_winner": None,
+        "batting_user": None,
+        "bowling_user": None,
+        "balls": 0,
+        "score": 0,
+        "innings": 1,
+        "target": None,
+        "bat_choice": None,
+        "bowl_choice": None,
+        "half_century_announced": False,
+        "century_announced": False,
+        "message_id": None,
+    }
+    CCL_MATCHES[match_id] = match
+    USER_CCL_MATCH[user.id] = match_id
+    GROUP_CCL_MATCH[chat.id] = match_id
+
+    sent_msg = await update.message.reply_text(
+        f"🏏 CCL Match started by {USERS[user.id]['name']}!\nWaiting for an opponent to join.",
+        reply_markup=join_cancel_keyboard(match_id)
+    )
+    match["message_id"] = sent_msg.message_id
+    
 
 def toss_keyboard(match_id):
     from telegram import InlineKeyboardMarkup, InlineKeyboardButton
