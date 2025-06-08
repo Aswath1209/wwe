@@ -103,15 +103,19 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user(user)
+    user_data = USERS[user.id]
     profile_text = (
-        f"👤 {USERS[user.id]['name']}\n"
-        f"🆔 {user.id}\n"
-        f"💰 {USERS[user.id]['coins']}\n"
-        f"🏆 Wins: {USERS[user.id]['wins']}\n"
-        f"💔 Losses: {USERS[user.id]['losses']}\n"
-        f"🤝 Ties: {USERS[user.id]['ties']}"
+        f"{user_data['name']}'s Profile\n\n"
+        f"Name: {user_data['name']}\n"
+        f"ID: {user.id}\n"
+        f"Purse: {user_data.get('coins', 0)}🪙\n\n"
+        f"Performance History:\n"
+        f"Wins: {user_data.get('wins', 0)}\n"
+        f"Losses: {user_data.get('losses', 0)}\n"
+        f"Ties: {user_data.get('ties', 0)}"
     )
     await update.message.reply_text(profile_text)
+    
 
 async def send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
