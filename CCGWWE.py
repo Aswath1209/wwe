@@ -225,10 +225,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/help - Show this help message"
     )
     await update.message.reply_text(help_text)
-
-# --- CCL command and handlers will be in Part 2 ---
 import asyncio
 import logging
+import random
+
+from telegram import InlineKeyboardMarkup, InlineKeyboardButton, Update
+from telegram.ext import ContextTypes
 
 # --- Constants ---
 
@@ -243,7 +245,6 @@ BOWLER_MAP = {
 
 BATSMAN_OPTIONS = ["0", "1", "2", "3", "4", "6"]
 
-# GIFs and commentary dictionaries (use your own or from Part 1)
 CCL_GIFS = {
     "0": [
         "https://media.giphy.com/media/3o7aD2saalBwwftBIY/giphy.gif",
@@ -305,6 +306,47 @@ COMMENTARY = {
 }
 
 # --- Helper keyboards ---
+
+def toss_keyboard(match_id):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Heads", callback_data=f"ccl_toss_{match_id}_heads"),
+            InlineKeyboardButton("Tails", callback_data=f"ccl_toss_{match_id}_tails"),
+        ]
+    ])
+
+def batbowl_keyboard(match_id):
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Bat 🏏", callback_data=f"ccl_batbowl_{match_id}_bat"),
+            InlineKeyboardButton("Bowl ⚾", callback_data=f"ccl_batbowl_{match_id}_bowl"),
+        ]
+    ])
+
+def join_cancel_keyboard(match_id):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Join ✅", callback_data=f"ccl_join_{match_id}")],
+        [InlineKeyboardButton("Cancel ❌", callback_data=f"ccl_cancel_{match_id}")]
+    ])
+
+# --- Utility to send random GIF and commentary ---
+
+async def send_random_event_update(context, chat_id, event_key):
+    gif_list = CCL_GIFS.get(event_key, [])
+    commentary_list = COMMENTARY.get(event_key, [])
+    gif_url = random.choice(gif_list) if gif_list else None
+    commentary = random.choice(commentary_list) if commentary_list else ""
+    if gif_url:
+        await context.bot.send_animation(
+            chat_id=chat_id,
+            animation=gif_url,
+            caption=commentary
+        )
+    else:
+        await context.bot.send_message(chat_id=chat_id, text=commentary)
+
+# --- /ccl Command Handler ---
+
 async def ccl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
@@ -351,48 +393,6 @@ async def ccl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=join_cancel_keyboard(match_id)
     )
     match["message_id"] = sent_msg.message_id
-    
-
-def toss_keyboard(match_id):
-    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Heads", callback_data=f"ccl_toss_{match_id}_heads"),
-            InlineKeyboardButton("Tails", callback_data=f"ccl_toss_{match_id}_tails"),
-        ]
-    ])
-
-def batbowl_keyboard(match_id):
-    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton("Bat 🏏", callback_data=f"ccl_batbowl_{match_id}_bat"),
-            InlineKeyboardButton("Bowl ⚾", callback_data=f"ccl_batbowl_{match_id}_bowl"),
-        ]
-    ])
-
-def join_cancel_keyboard(match_id):
-    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("Join ✅", callback_data=f"ccl_join_{match_id}")],
-        [InlineKeyboardButton("Cancel ❌", callback_data=f"ccl_cancel_{match_id}")]
-    ])
-
-# --- Utility to send random GIF and commentary ---
-
-async def send_random_event_update(context, chat_id, event_key):
-    gif_list = CCL_GIFS.get(event_key, [])
-    commentary_list = COMMENTARY.get(event_key, [])
-    gif_url = random.choice(gif_list) if gif_list else None
-    commentary = random.choice(commentary_list) if commentary_list else ""
-    if gif_url:
-        await context.bot.send_animation(
-            chat_id=chat_id,
-            animation=gif_url,
-            caption=commentary
-        )
-    else:
-        await context.bot.send_message(chat_id=chat_id, text=commentary)
 
 # --- Callback Handlers ---
 
@@ -743,16 +743,13 @@ async def endmatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CCL_MATCHES.pop(match_id, None)
     await update.message.reply_text("The ongoing CCL match has been ended by an admin.")
 import logging
-import asyncio
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
     filters,
-    ContextTypes,
 )
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 # --- Configuration (replace with your actual config) ---
 # BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
@@ -760,9 +757,13 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
-# --- Assume USERS, USER_CCL_MATCH, CCL_MATCHES, GROUP_CCL_MATCH dicts and helper functions are defined as in Parts 1 & 2 ---
-
-# --- Handler registration function ---
+# --- Assume these variables and functions are defined in Parts 1 & 2 ---
+# USERS, USER_CCL_MATCH, CCL_MATCHES, GROUP_CCL_MATCH
+# ensure_user, save_user, load_users
+# start, register, profile, send, add
+# leaderboard, leaderboard_callback, help_command
+# ccl_command, ccl_join_callback, ccl_cancel_callback, ccl_toss_callback, ccl_batbowl_callback
+# batsman_text_handler, bowler_text_handler, endmatch
 
 def register_handlers(application):
     # Basic commands
@@ -783,34 +784,21 @@ def register_handlers(application):
     application.add_handler(CallbackQueryHandler(ccl_batbowl_callback, pattern=r"^ccl_batbowl_"))
 
     # Message handlers for batsman and bowler text inputs
-    application.add_handler(MessageHandler(
-        filters.TEXT & filters.User(user_id=USER_CCL_MATCH.keys()),
-        batsman_text_handler
-    ), group=1)
-
-    application.add_handler(MessageHandler(
-        filters.TEXT & filters.User(user_id=USER_CCL_MATCH.keys()),
-        bowler_text_handler
-    ), group=2)
+    application.add_handler(MessageHandler(filters.TEXT, batsman_text_handler), group=1)
+    application.add_handler(MessageHandler(filters.TEXT, bowler_text_handler), group=2)
 
     # Admin command to end match
     application.add_handler(CommandHandler("endmatch", endmatch))
-
-# --- Startup function to load users ---
 
 async def on_startup(app):
     await load_users()
     logger.info("Users loaded from database. Bot is ready.")
 
-# --- Main function to start the bot ---
-
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Register all handlers
     register_handlers(app)
 
-    # Set startup hook
     app.post_init = on_startup
 
     logger.info("Starting bot polling...")
@@ -818,3 +806,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    
