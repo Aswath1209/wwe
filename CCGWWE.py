@@ -241,6 +241,8 @@ BOWLER_MAP = {
 
 BATSMAN_OPTIONS = {"0", "1", "2", "3", "4", "6"}
 
+GIF_EVENTS = {"0", "4", "6", "out", "50", "100"}
+
 CCL_GIFS = {
     "0": [
         "https://media.giphy.com/media/3o7aD2saalBwwftBIY/giphy.gif",
@@ -273,6 +275,21 @@ COMMENTARY = {
         "😶 Dot ball! Pressure builds...",
         "🎯 Tight delivery, no run.",
         "🛑 No run, good fielding!"
+    ],
+    "1": [
+        "🏃 Quick single taken.",
+        "👟 Running hard for one.",
+        "⚡ One run added."
+    ],
+    "2": [
+        "🏃‍♂️ Two runs!",
+        "💨 Good running between wickets.",
+        "🔥 Two runs scored."
+    ],
+    "3": [
+        "🏃‍♂️ Three runs! Great running!",
+        "💨 Three runs added.",
+        "🔥 Three runs scored."
     ],
     "4": [
         "🔥 Cracking four! What a shot!",
@@ -328,17 +345,21 @@ def join_cancel_keyboard(match_id):
 # --- Utility to send random GIF and commentary ---
 
 async def send_random_event_update(context, chat_id, event_key):
-    gif_list = CCL_GIFS.get(event_key, [])
     commentary_list = COMMENTARY.get(event_key, [])
-    gif_url = random.choice(gif_list) if gif_list else None
     commentary = random.choice(commentary_list) if commentary_list else ""
-    if gif_url:
-        await context.bot.send_animation(
-            chat_id=chat_id,
-            animation=gif_url,
-            caption=commentary
-        )
-    else:
+
+    if event_key in GIF_EVENTS:
+        gif_list = CCL_GIFS.get(event_key, [])
+        gif_url = random.choice(gif_list) if gif_list else None
+        if gif_url:
+            await context.bot.send_animation(
+                chat_id=chat_id,
+                animation=gif_url,
+                caption=commentary
+            )
+            return
+
+    if commentary:
         await context.bot.send_message(chat_id=chat_id, text=commentary)
 
 # --- /ccl Command Handler ---
@@ -543,8 +564,6 @@ async def ccl_batbowl_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     await query.answer()
 
-# --- Text Handlers for batsman and bowler ---
-
 async def batsman_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text.strip()
@@ -579,12 +598,10 @@ async def bowler_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if user.id != match["bowling_user"]:
         return
 
-    # Accept bowler input case-insensitive and normalize
     valid_deliveries = {k.lower(): k for k in BOWLER_MAP.keys()}
     if text.lower() not in valid_deliveries:
         await update.message.reply_text(
-            "❌ Invalid delivery! Please send one of:\n"
-            "RS, Bouncer, Yorker, Short, Slower, Knuckle"
+            "❌ Invalid delivery! Please send one of:\nRS, Bouncer, Yorker, Short, Slower, Knuckle"
         )
         return
 
@@ -598,8 +615,6 @@ async def bowler_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     await update.message.reply_text(f"✅ You chose: {normalized_text}")
     await remind_both_players(context, match)
     await check_both_choices_and_process(context, match)
-
-# --- Remind both players to send choices for every ball ---
 
 async def remind_both_players(context: ContextTypes.DEFAULT_TYPE, match):
     try:
@@ -616,13 +631,9 @@ async def remind_both_players(context: ContextTypes.DEFAULT_TYPE, match):
     except Exception as e:
         logging.error(f"Error sending reminder DM: {e}")
 
-# --- Check both choices and process ball ---
-
 async def check_both_choices_and_process(context: ContextTypes.DEFAULT_TYPE, match):
     if match["bat_choice"] is not None and match["bowl_choice"] is not None:
         await process_ball(context, match)
-
-# --- Process ball logic ---
 
 async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
     chat_id = match["group_id"]
@@ -630,7 +641,6 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
     bowl_str = match["bowl_choice"]
     bowl_num = BOWLER_MAP[bowl_str]
 
-    # Clear choices for next ball
     match["bat_choice"] = None
     match["bowl_choice"] = None
 
@@ -638,19 +648,16 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
     over = (match["balls"] - 1) // 6
     ball_in_over = (match["balls"] - 1) % 6 + 1
 
-    # Out condition: bowler bowls Yorker ("2") and batsman plays "2" OR both choices match numerically
     is_out = (bowl_num == "2" and bat_num == "2") or (bowl_num == bat_num)
 
     await context.bot.send_message(chat_id=chat_id, text=f"Over {over + 1}\nBall {ball_in_over}")
-    await asyncio.sleep(2)
     await context.bot.send_message(chat_id=chat_id, text=f"{USERS[match['bowling_user']]['name']} bowls {bowl_str}")
 
-    await asyncio.sleep(3)
+    await asyncio.sleep(2)
 
     if is_out:
         await send_random_event_update(context, chat_id, "out")
         if match["innings"] == 1:
-            # First innings over
             match["target"] = match["score"] + 1
             match["innings"] = 2
             match["balls"] = 0
@@ -660,7 +667,6 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
             match["century_announced"] = False
             await context.bot.send_message(chat_id=chat_id, text=f"Innings break! Target for second innings: {match['target']}")
         else:
-            # Second innings out => match ends, bowler wins
             await finish_match(context, match, winner=match["bowling_user"])
             return
     else:
@@ -668,7 +674,6 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
         match["score"] += runs
         await send_random_event_update(context, chat_id, bat_num)
 
-        # Milestone announcements
         if match["score"] >= 50 and not match["half_century_announced"]:
             match["half_century_announced"] = True
             await send_random_event_update(context, chat_id, "50")
@@ -678,16 +683,12 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
             await send_random_event_update(context, chat_id, "100")
             await context.bot.send_message(chat_id=chat_id, text="🏆 Century! Amazing innings!")
 
-        # Check second innings target chase
         if match["innings"] == 2 and match["score"] >= match["target"]:
-            # Batting player wins immediately
             await finish_match(context, match, winner=match["batting_user"])
             return
 
-    # Send current score separately
     await context.bot.send_message(chat_id=chat_id, text=f"Current Score: {match['score']}")
 
-    # Prompt next inputs by DM
     try:
         await context.bot.send_message(
             chat_id=match["batting_user"],
@@ -699,8 +700,6 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
         )
     except Exception as e:
         logging.error(f"Error sending DM prompts: {e}")
-
-# --- Finish match and update stats ---
 
 async def finish_match(context: ContextTypes.DEFAULT_TYPE, match, winner):
     chat_id = match["group_id"]
@@ -720,8 +719,6 @@ async def finish_match(context: ContextTypes.DEFAULT_TYPE, match, winner):
     USER_CCL_MATCH[opponent] = None
     GROUP_CCL_MATCH.pop(chat_id, None)
     CCL_MATCHES.pop(match["match_id"], None)
-
-# --- /endmatch command for admins ---
 
 async def endmatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -755,19 +752,21 @@ from telegram.ext import (
     filters,
 )
 
-# --- Configuration (replace with your actual config) ---
-# BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
-# ADMIN_IDS = {123456789}  # Your Telegram user IDs
+# --- Configuration ---
+BOT_TOKEN = "8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM"  # Replace with your bot token
 
 logger = logging.getLogger(__name__)
 
-# --- Assume these functions and variables are defined in Parts 1 & 2 ---
-# USERS, USER_CCL_MATCH, CCL_MATCHES, GROUP_CCL_MATCH
-# ensure_user, save_user, load_users
-# start, register, profile, send, add
-# leaderboard, leaderboard_callback, help_command
-# ccl_command, ccl_join_callback, ccl_cancel_callback, ccl_toss_callback, ccl_batbowl_callback
-# batsman_text_handler, bowler_text_handler, endmatch
+# --- Import or define all handlers and functions from Parts 1 & 2 here ---
+# For example:
+# from your_module import (
+#     start, register, profile, send, add,
+#     leaderboard, leaderboard_callback, help_command,
+#     ccl_command, ccl_join_callback, ccl_cancel_callback,
+#     ccl_toss_callback, ccl_batbowl_callback,
+#     batsman_text_handler, bowler_text_handler, endmatch,
+#     load_users
+# )
 
 def register_handlers(application):
     # Basic commands
@@ -788,8 +787,8 @@ def register_handlers(application):
     application.add_handler(CallbackQueryHandler(ccl_batbowl_callback, pattern=r"^ccl_batbowl_"))
 
     # Message handlers for batsman and bowler text inputs
-    application.add_handler(MessageHandler(filters.TEXT, batsman_text_handler), group=1)
-    application.add_handler(MessageHandler(filters.TEXT, bowler_text_handler), group=2)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, batsman_text_handler), group=1)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, bowler_text_handler), group=2)
 
     # Admin command to end match
     application.add_handler(CommandHandler("endmatch", endmatch))
