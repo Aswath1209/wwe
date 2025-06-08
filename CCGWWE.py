@@ -820,29 +820,41 @@ async def finish_match(context: ContextTypes.DEFAULT_TYPE, match, winner):
 
 # --- /endmatch command for admins ---
 
+from telegram.constants import ChatMemberStatus
+
 async def endmatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
+
     if chat.type not in ["group", "supergroup"]:
         await update.message.reply_text("This command can only be used in groups.")
         return
-    if user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ You are not authorized to end matches.")
+
+    # Check if user is an admin in the group
+    member = await context.bot.get_chat_member(chat.id, user.id)
+    if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.CREATOR]:
+        await update.message.reply_text("❌ You must be a group admin to end the match.")
         return
+
     match_id = GROUP_CCL_MATCH.get(chat.id)
     if not match_id:
         await update.message.reply_text("No ongoing CCL match in this group.")
         return
+
     match = CCL_MATCHES.get(match_id)
     if not match:
         await update.message.reply_text("Match data not found.")
         return
+
     USER_CCL_MATCH[match["initiator"]] = None
     if match.get("opponent"):
         USER_CCL_MATCH[match["opponent"]] = None
     GROUP_CCL_MATCH.pop(chat.id, None)
     CCL_MATCHES.pop(match_id, None)
-    await update.message.reply_text("The ongoing CCL match has been ended by an admin.")
+
+    await update.message.reply_text("The ongoing CCL match has been ended by a group admin.")
+    
+
 import logging
 from telegram.ext import (
     ApplicationBuilder,
