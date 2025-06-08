@@ -226,10 +226,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(help_text)
 
-# --- CCL command will be in Part 2 ---
+# --- CCL command and handlers will be in Part 2 ---
 import asyncio
+import logging
 
-# --- Constants for CCL ---
+# --- Constants ---
 
 BOWLER_MAP = {
     "0": "RS",
@@ -242,7 +243,7 @@ BOWLER_MAP = {
 
 BATSMAN_OPTIONS = ["0", "1", "2", "3", "4", "6"]
 
-# Multiple GIFs per event
+# GIFs and commentary dictionaries (use your own or from Part 1)
 CCL_GIFS = {
     "0": [
         "https://media.giphy.com/media/3o7aD2saalBwwftBIY/giphy.gif",
@@ -270,7 +271,6 @@ CCL_GIFS = {
     ],
 }
 
-# Multiple commentary lines with emojis
 COMMENTARY = {
     "0": [
         "😶 Dot ball! Pressure builds...",
@@ -304,9 +304,10 @@ COMMENTARY = {
     ],
 }
 
-# --- Helper keyboards for toss and bat/bowl choice ---
+# --- Helper keyboards ---
 
 def toss_keyboard(match_id):
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Heads", callback_data=f"ccl_toss_{match_id}_heads"),
@@ -315,6 +316,7 @@ def toss_keyboard(match_id):
     ])
 
 def batbowl_keyboard(match_id):
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Bat 🏏", callback_data=f"ccl_batbowl_{match_id}_bat"),
@@ -323,6 +325,7 @@ def batbowl_keyboard(match_id):
     ])
 
 def join_cancel_keyboard(match_id):
+    from telegram import InlineKeyboardMarkup, InlineKeyboardButton
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("Join ✅", callback_data=f"ccl_join_{match_id}")],
         [InlineKeyboardButton("Cancel ❌", callback_data=f"ccl_cancel_{match_id}")]
@@ -343,55 +346,6 @@ async def send_random_event_update(context, chat_id, event_key):
         )
     else:
         await context.bot.send_message(chat_id=chat_id, text=commentary)
-
-# --- /ccl Command Handler ---
-
-async def ccl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat = update.effective_chat
-    user = update.effective_user
-    ensure_user(user)
-
-    if chat.type not in ["group", "supergroup"]:
-        await update.message.reply_text("CCL matches can only be started in groups.")
-        return
-
-    if GROUP_CCL_MATCH.get(chat.id):
-        await update.message.reply_text("There is already an ongoing CCL match in this group.")
-        return
-
-    if USER_CCL_MATCH.get(user.id):
-        await update.message.reply_text("You are already participating in a CCL match.")
-        return
-
-    match_id = str(uuid.uuid4())
-    match = {
-        "match_id": match_id,
-        "group_id": chat.id,
-        "initiator": user.id,
-        "opponent": None,
-        "state": "waiting_for_opponent",
-        "toss_winner": None,
-        "batting_user": None,
-        "bowling_user": None,
-        "balls": 0,
-        "score": 0,
-        "innings": 1,
-        "target": None,
-        "bat_choice": None,
-        "bowl_choice": None,
-        "half_century_announced": False,
-        "century_announced": False,
-        "message_id": None,
-    }
-    CCL_MATCHES[match_id] = match
-    USER_CCL_MATCH[user.id] = match_id
-    GROUP_CCL_MATCH[chat.id] = match_id
-
-    sent_msg = await update.message.reply_text(
-        f"🏏 CCL Match started by {USERS[user.id]['name']}!\nWaiting for an opponent to join.",
-        reply_markup=join_cancel_keyboard(match_id)
-    )
-    match["message_id"] = sent_msg.message_id
 
 # --- Callback Handlers ---
 
@@ -502,7 +456,6 @@ async def ccl_batbowl_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     else:
         match["batting_user"] = match["toss_loser"]
         match["bowling_user"] = match["toss_winner"]
-    # Initialize innings data
     match.update({
         "state": "awaiting_inputs",
         "balls": 0,
@@ -517,13 +470,11 @@ async def ccl_batbowl_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     chat_id = match["group_id"]
     message_id = match["message_id"]
 
-    # Send DM to batsman and bowler asking for text input
     try:
         await context.bot.send_message(
             chat_id=match["batting_user"],
             text=(
-                "🏏 You're batting! Send your shot number as text:\n"
-                "Allowed numbers: 0,1,2,3,4,6"
+                "🏏 You're batting! Send your shot number as text (0,1,2,3,4,6)."
             )
         )
         await context.bot.send_message(
@@ -534,7 +485,7 @@ async def ccl_batbowl_callback(update: Update, context: ContextTypes.DEFAULT_TYP
             )
         )
     except Exception as e:
-        logger.error(f"Error sending DM: {e}")
+        logging.error(f"Error sending DM: {e}")
 
     await context.bot.edit_message_text(
         chat_id=chat_id,
@@ -549,7 +500,7 @@ async def ccl_batbowl_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     await query.answer()
 
-# --- Text Handlers for batsman and bowler choices ---
+# --- Text Handlers for batsman and bowler ---
 
 async def batsman_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -570,6 +521,7 @@ async def batsman_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     match["bat_choice"] = text
     await update.message.reply_text(f"✅ You chose: {text}")
+    await remind_both_players(context, match)
     await check_both_choices_and_process(context, match)
 
 async def bowler_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -594,7 +546,25 @@ async def bowler_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     match["bowl_choice"] = text
     await update.message.reply_text(f"✅ You chose: {text} ({BOWLER_MAP[text]})")
+    await remind_both_players(context, match)
     await check_both_choices_and_process(context, match)
+
+# --- Remind both players to send choices for every ball ---
+
+async def remind_both_players(context: ContextTypes.DEFAULT_TYPE, match):
+    try:
+        if match["bat_choice"] is None:
+            await context.bot.send_message(
+                chat_id=match["batting_user"],
+                text="🏏 Please send your shot number (0,1,2,3,4,6)."
+            )
+        if match["bowl_choice"] is None:
+            await context.bot.send_message(
+                chat_id=match["bowling_user"],
+                text="⚾ Please send your delivery number (RS=0, Bouncer=1, Yorker=2, Short=3, Slower=4, Knuckle=6)."
+            )
+    except Exception as e:
+        logging.error(f"Error sending reminder DM: {e}")
 
 # --- Check both choices and process ball ---
 
@@ -677,7 +647,7 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
             text="⚾ Send your delivery number (RS=0, Bouncer=1, Yorker=2, Short=3, Slower=4, Knuckle=6):"
         )
     except Exception as e:
-        logger.error(f"Error sending DM prompts: {e}")
+        logging.error(f"Error sending DM prompts: {e}")
 
 # --- Finish match and update stats ---
 
@@ -725,10 +695,30 @@ async def endmatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     GROUP_CCL_MATCH.pop(chat.id, None)
     CCL_MATCHES.pop(match_id, None)
     await update.message.reply_text("The ongoing CCL match has been ended by an admin.")
+import logging
+import asyncio
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
+    MessageHandler,
+    filters,
+    ContextTypes,
+)
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
-# --- Register all handlers ---
+# --- Configuration (replace with your actual config) ---
+# BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+# ADMIN_IDS = {123456789}  # Your Telegram user IDs
+
+logger = logging.getLogger(__name__)
+
+# --- Assume USERS, USER_CCL_MATCH, CCL_MATCHES, GROUP_CCL_MATCH dicts and helper functions are defined as in Parts 1 & 2 ---
+
+# --- Handler registration function ---
 
 def register_handlers(application):
+    # Basic commands
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("register", register))
     application.add_handler(CommandHandler("profile", profile))
@@ -738,29 +728,39 @@ def register_handlers(application):
     application.add_handler(CallbackQueryHandler(leaderboard_callback, pattern=r"^leaderboard_"))
     application.add_handler(CommandHandler("help", help_command))
 
+    # CCL commands and callbacks
     application.add_handler(CommandHandler("ccl", ccl_command))
     application.add_handler(CallbackQueryHandler(ccl_join_callback, pattern=r"^ccl_join_"))
     application.add_handler(CallbackQueryHandler(ccl_cancel_callback, pattern=r"^ccl_cancel_"))
     application.add_handler(CallbackQueryHandler(ccl_toss_callback, pattern=r"^ccl_toss_"))
     application.add_handler(CallbackQueryHandler(ccl_batbowl_callback, pattern=r"^ccl_batbowl_"))
 
-    application.add_handler(MessageHandler(filters.TEXT & filters.User(user_id=USER_CCL_MATCH.keys()), batsman_text_handler), group=1)
-    application.add_handler(MessageHandler(filters.TEXT & filters.User(user_id=USER_CCL_MATCH.keys()), bowler_text_handler), group=2)
+    # Message handlers for batsman and bowler text inputs
+    application.add_handler(MessageHandler(
+        filters.TEXT & filters.User(user_id=USER_CCL_MATCH.keys()),
+        batsman_text_handler
+    ), group=1)
 
+    application.add_handler(MessageHandler(
+        filters.TEXT & filters.User(user_id=USER_CCL_MATCH.keys()),
+        bowler_text_handler
+    ), group=2)
+
+    # Admin command to end match
     application.add_handler(CommandHandler("endmatch", endmatch))
-import asyncio
-from telegram.ext import ApplicationBuilder
 
-# --- Main Startup and Run ---
+# --- Startup function to load users ---
 
 async def on_startup(app):
     await load_users()
     logger.info("Users loaded from database. Bot is ready.")
 
+# --- Main function to start the bot ---
+
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Register all command and callback handlers
+    # Register all handlers
     register_handlers(app)
 
     # Set startup hook
