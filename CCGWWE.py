@@ -171,28 +171,38 @@ async def add(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Daily command ---
 
+from datetime import datetime, timedelta
+
 async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user(user)
     user_data = USERS[user.id]
     now = datetime.utcnow()
-    last_daily = user_data.get("last_daily")
-    if last_daily:
-        last_daily_dt = datetime.fromisoformat(last_daily)
-        if now - last_daily_dt < timedelta(hours=24):
-            remaining = timedelta(hours=24) - (now - last_daily_dt)
-            hours, remainder = divmod(remaining.seconds, 3600)
-            minutes, _ = divmod(remainder, 60)
-            await update.message.reply_text(
-                f"⏳ You have already claimed your daily reward.\n"
-                f"Come back in {hours}h {minutes}m."
-            )
-            return
+
+    last_daily_str = user_data.get("last_daily")
+    if last_daily_str:
+        try:
+            last_daily = datetime.fromisoformat(last_daily_str)
+            if now - last_daily < timedelta(hours=24):
+                remaining = timedelta(hours=24) - (now - last_daily)
+                hours, remainder = divmod(remaining.seconds, 3600)
+                minutes, _ = divmod(remainder, 60)
+                await update.message.reply_text(
+                    f"⏳ You have already claimed your daily reward.\n"
+                    f"Come back in {hours}h {minutes}m."
+                )
+                return
+        except Exception:
+            # If parsing fails, ignore and allow claim
+            pass
+
     reward = random.randint(100, 500)
-    user_data["coins"] += reward
+    user_data["coins"] = user_data.get("coins", 0) + reward
     user_data["last_daily"] = now.isoformat()
     await save_user(user.id)
-    await update.message.reply_text(f"🎉 You received your daily reward of {reward}💰!")
+    await update.message.reply_text(f"🎉 You received your daily reward of {reward}🪙!")
+    
+            
 
 # --- Leaderboard ---
 
