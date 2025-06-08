@@ -1,6 +1,7 @@
 import logging
 import random
 import uuid
+import asyncio
 from datetime import datetime
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
@@ -215,7 +216,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/send - Send coins (reply to user)\n"
         "/add - Admin: add coins\n"
         "/leaderboard - View top players\n"
-        "/ccl - Start a CCL match in group\n"
+        "/ccl <bet amount> - Start a CCL match in group (bet optional)\n"
         "/endmatch - Admin: end ongoing CCL match in group\n"
         "/help - Show this help message"
     )
@@ -362,12 +363,26 @@ async def send_random_event_update(context, chat_id, event_key):
     if commentary:
         await context.bot.send_message(chat_id=chat_id, text=commentary)
 
-# --- /ccl Command Handler ---
+# --- /ccl command with optional bet amount ---
 
 async def ccl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     user = update.effective_user
     ensure_user(user)
+
+    bet_amount = 0
+    if context.args:
+        try:
+            bet_amount = int(context.args[0])
+            if bet_amount < 0:
+                await update.message.reply_text("Bet amount cannot be negative.")
+                return
+            if bet_amount > 0 and USERS[user.id]["coins"] < bet_amount:
+                await update.message.reply_text(f"You don't have enough coins to bet {bet_amount}💰.")
+                return
+        except ValueError:
+            await update.message.reply_text("Invalid bet amount. Usage: /ccl [bet_amount]")
+            return
 
     if chat.type not in ["group", "supergroup"]:
         await update.message.reply_text("CCL matches can only be started in groups.")
@@ -399,19 +414,21 @@ async def ccl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "bowl_choice": None,
         "half_century_announced": False,
         "century_announced": False,
+        "bet_amount": bet_amount,
         "message_id": None,
     }
     CCL_MATCHES[match_id] = match
     USER_CCL_MATCH[user.id] = match_id
     GROUP_CCL_MATCH[chat.id] = match_id
 
+    bet_text = f" with a bet of {bet_amount}💰" if bet_amount > 0 else ""
     sent_msg = await update.message.reply_text(
-        f"🏏 CCL Match started by {USERS[user.id]['name']}!\nWaiting for an opponent to join.",
+        f"🏏 CCL Match started by {USERS[user.id]['name']}{bet_text}!\nWaiting for an opponent to join.",
         reply_markup=join_cancel_keyboard(match_id)
     )
     match["message_id"] = sent_msg.message_id
 
-# --- Callback Handlers ---
+# --- Join, Cancel, Toss, Bat/Bowl choice callbacks ---
 
 async def ccl_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -431,6 +448,12 @@ async def ccl_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if USER_CCL_MATCH.get(user.id):
         await query.answer("You are already in a CCL match.", show_alert=True)
         return
+    # Check bet amount affordability
+    bet_amount = match.get("bet_amount", 0)
+    if bet_amount > 0 and USERS[user.id]["coins"] < bet_amount:
+        await query.answer(f"You don't have enough coins to join this {bet_amount}💰 bet match.", show_alert=True)
+        return
+
     match["opponent"] = user.id
     match["state"] = "toss"
     USER_CCL_MATCH[user.id] = match_id
@@ -564,6 +587,8 @@ async def ccl_batbowl_callback(update: Update, context: ContextTypes.DEFAULT_TYP
     )
     await query.answer()
 
+# --- Batting and bowling text handlers ---
+
 async def batsman_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     text = update.message.text.strip()
@@ -635,6 +660,8 @@ async def check_both_choices_and_process(context: ContextTypes.DEFAULT_TYPE, mat
     if match["bat_choice"] is not None and match["bowl_choice"] is not None:
         await process_ball(context, match)
 
+# --- Ball processing with delays and message flow ---
+
 async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
     chat_id = match["group_id"]
     bat_num = match["bat_choice"]
@@ -650,13 +677,25 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
 
     is_out = (bowl_num == "2" and bat_num == "2") or (bowl_num == bat_num)
 
-    await context.bot.send_message(chat_id=chat_id, text=f"Over {over + 1}\nBall {ball_in_over}")
-    await context.bot.send_message(chat_id=chat_id, text=f"{USERS[match['bowling_user']]['name']} bowls {bowl_str}")
+    # Message flow with delays:
+    await context.bot.send_message(chat_id=chat_id, text=f"Over {over + 1}")
+    await context.bot.send_message(chat_id=chat_id, text=f"Ball {ball_in_over}")
+    await asyncio.sleep(4)
 
-    await asyncio.sleep(2)
+    await context.bot.send_message(chat_id=chat_id, text=f"{USERS[match['bowling_user']]['name']} bowls a {bowl_str} ball")
+    await asyncio.sleep(4)
 
     if is_out:
         await send_random_event_update(context, chat_id, "out")
+    else:
+        runs = int(bat_num)
+        match["score"] += runs
+        await send_random_event_update(context, chat_id, bat_num)
+
+    await context.bot.send_message(chat_id=chat_id, text=f"Current Score: {match['score']}")
+
+    # Handle innings and match end
+    if is_out:
         if match["innings"] == 1:
             match["target"] = match["score"] + 1
             match["innings"] = 2
@@ -670,10 +709,6 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
             await finish_match(context, match, winner=match["bowling_user"])
             return
     else:
-        runs = int(bat_num)
-        match["score"] += runs
-        await send_random_event_update(context, chat_id, bat_num)
-
         if match["score"] >= 50 and not match["half_century_announced"]:
             match["half_century_announced"] = True
             await send_random_event_update(context, chat_id, "50")
@@ -687,8 +722,6 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
             await finish_match(context, match, winner=match["batting_user"])
             return
 
-    await context.bot.send_message(chat_id=chat_id, text=f"Current Score: {match['score']}")
-
     try:
         await context.bot.send_message(
             chat_id=match["batting_user"],
@@ -701,14 +734,24 @@ async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
     except Exception as e:
         logging.error(f"Error sending DM prompts: {e}")
 
+# --- Finish match and update stats ---
+
 async def finish_match(context: ContextTypes.DEFAULT_TYPE, match, winner):
     chat_id = match["group_id"]
     initiator = match["initiator"]
     opponent = match["opponent"]
     loser = initiator if winner != initiator else opponent
 
+    bet_amount = match.get("bet_amount", 0)
+
     USERS[winner]["wins"] += 1
     USERS[loser]["losses"] += 1
+
+    # Handle bet coin transfer
+    if bet_amount > 0:
+        USERS[winner]["coins"] += bet_amount
+        USERS[loser]["coins"] -= bet_amount
+        await context.bot.send_message(chat_id=chat_id, text=f"💰 {bet_amount} coins transferred to {USERS[winner]['name']} as bet winnings!")
 
     await save_user(winner)
     await save_user(loser)
@@ -719,6 +762,10 @@ async def finish_match(context: ContextTypes.DEFAULT_TYPE, match, winner):
     USER_CCL_MATCH[opponent] = None
     GROUP_CCL_MATCH.pop(chat_id, None)
     CCL_MATCHES.pop(match["match_id"], None)
+
+# --- /endmatch command for admins ---
+
+# --- /endmatch command for admins ---
 
 async def endmatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
@@ -743,6 +790,8 @@ async def endmatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     GROUP_CCL_MATCH.pop(chat.id, None)
     CCL_MATCHES.pop(match_id, None)
     await update.message.reply_text("The ongoing CCL match has been ended by an admin.")
+
+# --- (You can add other handlers or utility functions below if needed) ---
 import logging
 from telegram.ext import (
     ApplicationBuilder,
