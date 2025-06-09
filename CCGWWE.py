@@ -1,556 +1,796 @@
+import random
+import asyncio
 import logging
+from datetime import datetime
+from typing import Dict, List, Optional
+
+from motor.motor_asyncio import AsyncIOMotorClient
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, User, Message
 )
-from telegram.constants import ChatAction
+from telegram.constants import ChatType
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, ContextTypes,
     CallbackQueryHandler, MessageHandler, filters
 )
-from pymongo import MongoClient
-import random
-import asyncio
-import os
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
-
-# === MongoDB and Bot Token ===
-MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"
+# --- CONFIGURATION ---
 BOT_TOKEN = "8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM"
+MONGODB_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlwy.net:54853"
 
-client = MongoClient(MONGO_URL)
-db = client["ccl_group_db"]
-match_col = db["match"]
-users_col = db["users"]
+# --- LOGGING ---
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# === START AND REGISTER ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🏏 Welcome to CCL Group Cricket Bot!\nUse /register to join the game."
-    )
+# --- DATABASE ---
+mongo_client = AsyncIOMotorClient(MONGODB_URL)
+db = mongo_client["ccl_cricket"]
+games: Dict[int, dict] = {}
 
-async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_data = {
-        "user_id": user.id,
-        "username": user.username or user.first_name
-    }
-    users_col.update_one({"user_id": user.id}, {"$set": user_data}, upsert=True)
-    await update.message.reply_text("✅ You are registered for CCL matches!")
-
-# === CCL GROUP INIT ===
-async def cclgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat = update.effective_chat
-
-    match = {
-        "chat_id": chat.id,
-        "host_id": user.id,
-        "host_name": user.username or user.first_name,
-        "teamA": [],
-        "teamB": [],
-        "captainA": None,
-        "captainB": None,
-        "innings": 1,
-        "current_batting": "A",
-        "overs": None,
-        "scoreboard": {"A": [], "B": []},
-        "status": "setup"
-    }
-    match_col.update_one({"chat_id": chat.id}, {"$set": match}, upsert=True)
-
-    await update.message.reply_text(
-        f"🏏 CCL Group Match Initialized by {user.mention_html()}",
-        parse_mode='HTML'
-    )
-# === ADD PLAYERS TO TEAM A/B ===
-async def addA(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await add_player(update, context, "A")
-
-async def addB(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await add_player(update, context, "B")
-
-async def add_player(update: Update, context: ContextTypes.DEFAULT_TYPE, team: str):
-    chat_id = update.effective_chat.id
-    match = match_col.find_one({"chat_id": chat_id})
-    if not match: return
-
-    if len(context.args) != 1:
-        await update.message.reply_text("⚠️ Usage: /addA @username or user_id")
-        return
-
-    user_input = context.args[0]
-    if user_input.startswith("@"):
-        user_input = user_input[1:]
-
-    player = users_col.find_one({
-        "$or": [{"username": user_input}, {"user_id": int(user_input) if user_input.isdigit() else -1}]
-    })
-
-    if not player:
-        await update.message.reply_text("❌ Player not registered.")
-        return
-
-    player_entry = {"user_id": player["user_id"], "username": player["username"]}
-    team_key = "teamA" if team == "A" else "teamB"
-
-    if player_entry in match[team_key]:
-        await update.message.reply_text("⚠️ Player already in team.")
-        return
-
-    match[team_key].append(player_entry)
-    match_col.update_one({"chat_id": chat_id}, {"$set": {team_key: match[team_key]}})
-    await update.message.reply_text(f"✅ Added {player['username']} to Team {team}")
-
-# === SET CAPTAIN ===
-async def capA(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await set_captain(update, context, "A")
-
-async def capB(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await set_captain(update, context, "B")
-
-async def set_captain(update: Update, context: ContextTypes.DEFAULT_TYPE, team: str):
-    chat_id = update.effective_chat.id
-    match = match_col.find_one({"chat_id": chat_id})
-    if not match: return
-
-    if len(context.args) != 1 or not context.args[0].isdigit():
-        await update.message.reply_text("⚠️ Usage: /CapA 1")
-        return
-
-    index = int(context.args[0]) - 1
-    team_key = "teamA" if team == "A" else "teamB"
-    if index < 0 or index >= len(match[team_key]):
-        await update.message.reply_text("❌ Invalid player index.")
-        return
-
-    player = match[team_key][index]
-    cap_key = "captainA" if team == "A" else "captainB"
-    match_col.update_one({"chat_id": chat_id}, {"$set": {cap_key: player}})
-    await update.message.reply_text(f"🧢 {player['username']} is now Captain of Team {team}")
-
-# === VIEW TEAM ===
-async def team(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    match = match_col.find_one({"chat_id": chat_id})
-    if not match: return
-
-    def format_team(team, name):
-        lines = [f"🏏 {name}"]
-        for i, p in enumerate(team, 1):
-            lines.append(f"{i}) {p['username']}")
-        return "\n".join(lines)
-
-    msg = f"{format_team(match['teamA'], 'Team A')}\n\n{format_team(match['teamB'], 'Team B')}"
-    await update.message.reply_text(msg)
-# === TOSS HANDLER ===
-async def toss(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    match = match_col.find_one({"chat_id": chat_id})
-    if not match or not match.get("captainA") or not match.get("captainB"):
-        await update.message.reply_text("⚠️ Both teams and captains must be set first.")
-        return
-
-    keyboard = [
-        [
-            InlineKeyboardButton("Heads", callback_data="toss_heads"),
-            InlineKeyboardButton("Tails", callback_data="toss_tails")
-        ]
+# --- GIFs and COMMENTARY ---
+GIFS = {
+    0: [
+        "https://media.giphy.com/media/xT0BKqhdlKCxCNsVTq/giphy.gif",
+        "https://media.giphy.com/media/3o7btPCcdNniyf0ArS/giphy.gif"
+    ],
+    4: [
+        "https://media.giphy.com/media/3o6Zt62PeJeFUDwBKo/giphy.gif",
+        "https://media.giphy.com/media/3oKIPnAiaMCws8nOsE/giphy.gif"
+    ],
+    6: [
+        "https://media.giphy.com/media/3o6gE5aYp7h1E7e5MI/giphy.gif",
+        "https://media.giphy.com/media/26gsqQxPQXHBiBEUU/giphy.gif"
+    ],
+    'OUT': [
+        "https://media.giphy.com/media/3o6Zt8zb1A6Y2T1y5C/giphy.gif",
+        "https://media.giphy.com/media/l4FGnCqEwC7p1nUrm/giphy.gif"
+    ],
+    'FIFTY': [
+        "https://media.giphy.com/media/3o6ZtrnM7gJtjuo1Co/giphy.gif"
+    ],
+    'HUNDRED': [
+        "https://media.giphy.com/media/3o6ZsW0nsi2E4pYv5y/giphy.gif"
     ]
-    capA_id = match['captainA']['user_id']
-    msg = await update.message.reply_text(
-        f"🪙 {match['captainA']['username']}, choose Heads or Tails:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
-    match_col.update_one({"chat_id": chat_id}, {"$set": {"toss_msg_id": msg.message_id}})
-
-# === TOSS CALLBACK ===
-async def toss_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat_id
-    match = match_col.find_one({"chat_id": chat_id})
-
-    if not match or match["status"] != "setup":
-        return
-
-    user_id = query.from_user.id
-    if user_id != match["captainA"]["user_id"]:
-        await query.answer("Only Team A captain can choose toss.", show_alert=True)
-        return
-
-    user_choice = query.data.split("_")[1]
-    actual = random.choice(["heads", "tails"])
-    winner = "A" if user_choice == actual else "B"
-    match_col.update_one({"chat_id": chat_id}, {"$set": {"toss_winner": winner}})
-
-    toss_winner_cap = match["captainA"] if winner == "A" else match["captainB"]
-    keyboard = [
-        [
-            InlineKeyboardButton("Bat", callback_data="choose_bat"),
-            InlineKeyboardButton("Bowl", callback_data="choose_bowl")
-        ]
+}
+COMMENTARY = {
+    0: [
+        "Dot ball! Batsman couldn't get it past.",
+        "No run, pressure on the batsman.",
+        "Good delivery, defended."
+    ],
+    1: [
+        "Quick single, good running!",
+        "One run taken.",
+        "Placed nicely for a single."
+    ],
+    2: [
+        "They come back for two!",
+        "Two runs, solid running.",
+        "Excellent placement for a couple."
+    ],
+    3: [
+        "Three runs! Great running.",
+        "Good shot, three on the board.",
+        "They push hard and get three."
+    ],
+    4: [
+        "FOUR! Crunched to the boundary.",
+        "That's a lovely shot for four.",
+        "Ball races away! Four runs."
+    ],
+    6: [
+        "SIX! That's massive!",
+        "Into the stands! Six runs.",
+        "What a hit! Maximum."
+    ],
+    'OUT': [
+        "He's OUT! Perfect ball.",
+        "Clean bowled!",
+        "Caught! He's gone.",
+        "That's a wicket!"
+    ],
+    'FIFTY': [
+        "Fifty up! Well played.",
+        "Half century! Classy batting.",
+        "50 runs! Raises the bat."
+    ],
+    'HUNDRED': [
+        "Century! Outstanding knock.",
+        "100 runs! Take a bow.",
+        "A brilliant hundred."
     ]
-    await query.edit_message_text(
-        f"🪙 It's {actual.title()}!\n🏆 Team {winner} won the toss.\n"
-        f"{toss_winner_cap['username']}, choose to Bat or Bowl:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+}
+BALL_VARIATION_MAP = {
+    'Rs': 0,
+    'Bouncer': 1,
+    'Yorker': 2,
+    'Short': 3,
+    'Slower': 4,
+    'Knuckle': 6
+}
+
+def get_gif(run):
+    return random.choice(GIFS[run]) if run in GIFS else None
+
+def get_commentary(event):
+    return random.choice(COMMENTARY[event]) if event in COMMENTARY else "Exciting cricket!"
+
+def user_mention(user):
+    return f"[{user['name']}](tg://user?id={user['user_id']})"
+
+async def save_game(group_id):
+    await db.games.update_one(
+        {"group_id": group_id},
+        {"$set": games[group_id]},
+        upsert=True
     )
 
-# === BAT/BOWL CALLBACK ===
-async def batbowl_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat_id
-    match = match_col.find_one({"chat_id": chat_id})
-    if not match: return
+async def load_game(group_id):
+    doc = await db.games.find_one({"group_id": group_id})
+    if doc:
+        games[group_id] = doc
 
-    user_id = query.from_user.id
-    toss_winner = match.get("toss_winner")
-    cap_id = match["captainA"]["user_id"] if toss_winner == "A" else match["captainB"]["user_id"]
-    if user_id != cap_id:
-        await query.answer("Only toss winner captain can choose.", show_alert=True)
-        return
+def init_score_state():
+    return {"runs": 0, "balls": 0, "bat_stats": {}, "bowl_stats": {}, "bat_order": [], "bowl_order": [], "wickets": 0}
 
-    choice = query.data.split("_")[1]
-    match_col.update_one({"chat_id": chat_id}, {"$set": {"choice": choice}})
-    await query.edit_message_text(f"🔧 Team {toss_winner} chose to {choice.title()} first!")
+def get_opposite_team(team): return 'B' if team == 'A' else 'A'
 
-# === COMMENTARY/GIF ENGINE ===
-commentary_pool = {
-    0: ["Dot ball! Tight bowling.", "No run, well bowled!", "He defends it."],
-    1: ["Quick single taken.", "They steal a run!", "Just a tap for one."],
-    2: ["Good running between wickets!", "Double taken!", "Two runs with ease."],
-    3: ["Excellent running! 3 runs.", "Triple taken, rare!", "A fumble allows three."],
-    4: ["That's a boundary!", "Crisp four!", "Smashed to the ropes!"],
-    6: ["What a six!", "Massive hit!", "Out of the park!"],
-    "out": ["Clean bowled!", "Caught out!", "Gone! Big wicket!"]
-}
+def admin_or_host(game, user_id, admins):
+    if game['host_id'] == user_id: return True
+    for admin in admins:
+        if admin.user.id == user_id: return True
+    return False
 
-gif_pool = {
-    0: ["https://tenor.com/view/dotball1.gif", "https://tenor.com/view/dotball2.gif"],
-    4: ["https://tenor.com/view/four1.gif", "https://tenor.com/view/four2.gif"],
-    6: ["https://tenor.com/view/six1.gif", "https://tenor.com/view/six2.gif"],
-    "out": ["https://tenor.com/view/out1.gif", "https://tenor.com/view/out2.gif"]
-}
+async def get_admins(context, chat_id):
+    try:
+        return await context.bot.get_chat_administrators(chat_id)
+    except Exception:
+        return []
 
-def get_random_commentary(event):
-    return random.choice(commentary_pool.get(event, [""]))
+def get_player_by_index(game, team, idx):
+    if idx < 0 or idx >= len(game['teams'][team]):
+        return None
+    return game['teams'][team][idx]
 
-def get_random_gif(event):
-    return random.choice(gif_pool.get(event, []))
-# === PLAYER INPUT HANDLING ===
-valid_runs = ['0', '1', '2', '3', '4', '6']
-valid_balls = {
-    "Rs": 0,
-    "Bouncer": 1,
-    "Yorker": 2,
-    "Short": 3,
-    "Slower": 4,
-    "Knuckle": 6
-}
-
-player_inputs = {}
-
-async def dm_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
-    chat_id = update.effective_chat.id
-
-    for match in match_col.find():
-        if match.get("current_striker", {}).get("user_id") == user_id:
-            if text in valid_runs:
-                player_inputs[user_id] = int(text)
-                await update.message.reply_text(f"✅ You chose {text}")
-            else:
-                await update.message.reply_text("❌ Invalid input. Choose from 0,1,2,3,4,6")
-            return
-
-        elif match.get("current_bowler", {}).get("user_id") == user_id:
-            if text in valid_balls:
-                player_inputs[user_id] = valid_balls[text]
-                await update.message.reply_text(f"✅ You chose {text} ball")
-            else:
-                await update.message.reply_text("❌ Invalid input. Choose from Rs, Bouncer, Yorker, Short, Slower, Knuckle")
-            return
-
-# === BALL PROCESSING ENGINE ===
-async def process_ball(context: ContextTypes.DEFAULT_TYPE, match):
-    chat_id = match["chat_id"]
-    striker = match["current_striker"]
-    bowler = match["current_bowler"]
-    striker_id = striker["user_id"]
-    bowler_id = bowler["user_id"]
-
-    if striker_id not in player_inputs or bowler_id not in player_inputs:
-        return  # Wait for both
-
-    run = player_inputs.pop(striker_id)
-    ball = player_inputs.pop(bowler_id)
-
-    event_msg = [f"Over {match['current_over']}.{match['ball_in_over'] + 1}"]
-    await context.bot.send_message(chat_id, f"🏏 {event_msg[0]}")
-    await asyncio.sleep(2)
-
-    await context.bot.send_message(chat_id, f"🎯 {bowler['username']} bowls a {get_key_from_value(valid_balls, ball)}")
-    await asyncio.sleep(2)
-
-    if run == ball:
-        # OUT
-        match['wickets'] += 1
-        msg = f"❌ {striker['username']} is OUT!"
-        comment = get_random_commentary("out")
-        gif = get_random_gif("out")
-        match['current_batting_team']['score'] += 0
-        match['ball_in_over'] += 1
-    else:
-        match['current_batting_team']['score'] += run
-        msg = f"{striker['username']} scores {run} run(s)"
-        comment = get_random_commentary(run)
-        gif = get_random_gif(run) if run in [0, 4, 6] else None
-        match['ball_in_over'] += 1
-        if run % 2 == 1:
-            # strike rotation
-            match['current_striker'], match['current_non_striker'] = match['current_non_striker'], match['current_striker']
-
-    await context.bot.send_message(chat_id, f"{comment}\n{msg}")
-    if gif:
-        await context.bot.send_animation(chat_id, gif)
-
-    # Check over end
-    if match['ball_in_over'] >= 6:
-        match['current_over'] += 1
-        match['ball_in_over'] = 0
-        # swap striker for even runs at over end
-        if run % 2 == 0:
-            match['current_striker'], match['current_non_striker'] = match['current_non_striker'], match['current_striker']
-
-    # Save updated match
-    match_col.update_one({"chat_id": chat_id}, {"$set": match})
-
-def get_key_from_value(d, val):
-    for k, v in d.items():
-        if v == val:
-            return k
+def get_player_index(game, team, user_id):
+    for i, player in enumerate(game['teams'][team]):
+        if player['user_id'] == user_id:
+            return i
     return None
-# === ADMIN/HOST UTILITY COMMANDS ===
 
-@bot_cmd("retiredhurt")
-async def retired_hurt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    match = match_col.find_one({"chat_id": chat_id})
-    if not match: return
+def get_team_name(letter):
+    return "Team A" if letter == "A" else "Team B"
 
-    args = context.args
-    if not args or args[0].lower() not in ["strike", "non", "bowler"]:
-        return await update.message.reply_text("Usage: /retiredhurt strike|non|bowler")
-
-    key = args[0].lower()
-    text = ""
-    if key == "strike":
-        match["retired_hurt"].append(match["current_striker"])
-        text = f"{match['current_striker']['username']} has been retired hurt!"
-        match["current_striker"] = {}
-    elif key == "non":
-        match["retired_hurt"].append(match["current_non_striker"])
-        text = f"{match['current_non_striker']['username']} has been retired hurt!"
-        match["current_non_striker"] = {}
-    elif key == "bowler":
-        match["retired_hurt_bowlers"].append(match["current_bowler"])
-        text = f"{match['current_bowler']['username']} has been retired hurt after partial over!"
-        match["current_bowler"] = {}
-
-    match_col.update_one({"chat_id": chat_id}, {"$set": match})
-    await update.message.reply_text(text)
-
-@bot_cmd("retiredout")
-async def retired_out(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    match = match_col.find_one({"chat_id": chat_id})
-    if not match: return
-    args = context.args
-    if not args or args[0].lower() not in ["strike", "non"]:
-        return await update.message.reply_text("Usage: /retiredout strike|non")
-
-    if args[0].lower() == "strike":
-        name = match["current_striker"]["username"]
-        match["wickets"] += 1
-        match["current_striker"] = {}
-    else:
-        name = match["current_non_striker"]["username"]
-        match["wickets"] += 1
-        match["current_non_striker"] = {}
-
-    match_col.update_one({"chat_id": chat_id}, {"$set": match})
-    await update.message.reply_text(f"❌ {name} retired out.")
-
-@bot_cmd("bonus")
-async def bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if not args or args[0] not in ["A", "B"]:
-        return await update.message.reply_text("Usage: /bonus A/B runs")
-    team_key = "team_a" if args[0] == "A" else "team_b"
-    try:
-        runs = int(args[1])
-    except:
-        return await update.message.reply_text("Invalid run amount.")
-    match = match_col.find_one({"chat_id": update.effective_chat.id})
-    match[team_key]["score"] += runs
-    match_col.update_one({"chat_id": update.effective_chat.id}, {"$set": match})
-    await update.message.reply_text(f"✅ {args[0]} team got +{runs} bonus runs")
-
-@bot_cmd("penalty")
-async def penalty(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    args = context.args
-    if not args or args[0] not in ["A", "B"]:
-        return await update.message.reply_text("Usage: /penalty A/B runs")
-    team_key = "team_a" if args[0] == "A" else "team_b"
-    try:
-        runs = int(args[1])
-    except:
-        return await update.message.reply_text("Invalid run amount.")
-    match = match_col.find_one({"chat_id": update.effective_chat.id})
-    match[team_key]["score"] -= runs
-    match_col.update_one({"chat_id": update.effective_chat.id}, {"$set": match})
-    await update.message.reply_text(f"⚠️ {args[0]} team got -{runs} penalty runs")
-
-@bot_cmd("inningswap")
-async def innings_swap(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    match = match_col.find_one({"chat_id": chat_id})
-    if not match: return
-    match["innings"] = 2
-    match["ball_in_over"] = 0
-    match["current_over"] = 0
-    match["wickets"] = 0
-    match["current_striker"] = {}
-    match["current_non_striker"] = {}
-    match["current_bowler"] = {}
-    match["retired_hurt"] = []
-    match["retired_hurt_bowlers"] = []
-    match["target"] = match["team_a"]["score"] + 1
-    match["current_batting_team"] = match["team_b"]
-    match_col.update_one({"chat_id": chat_id}, {"$set": match})
-    await update.message.reply_text("🚨 Innings changed. Team B will now chase!")
-
-@bot_cmd("hostchange")
-async def host_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    chat = update.effective_chat
-    if not user or not chat:
-        return
-    member = await chat.get_member(user.id)
-    if not member.status in ["administrator", "creator"]:
-        return await update.message.reply_text("Only admins can become host during a match.")
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Confirm", callback_data=f"hostconfirm|{user.id}"),
-         InlineKeyboardButton("❌ Cancel", callback_data="hostcancel")]
-    ])
-    await update.message.reply_text(f"{user.first_name}, do you want to become the new host?", reply_markup=kb)
-
-@callback_handler
-async def host_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data.startswith("hostconfirm"):
-        user_id = int(data.split("|")[1])
-        user = await context.bot.get_chat_member(query.message.chat.id, user_id)
-        match_col.update_one({"chat_id": query.message.chat.id}, {"$set": {"host": user.user.id}})
-        await query.edit_message_text(f"✅ {user.user.first_name} is now the new host!")
-    elif data == "hostcancel":
-        await query.edit_message_text("❌ Host change cancelled.")
-
-@bot_cmd("finish")
-async def finish_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Confirm", callback_data="finish_yes"),
-         InlineKeyboardButton("❌ Cancel", callback_data="finish_no")]
-    ])
-    await update.message.reply_text("Are you sure you want to end the match?", reply_markup=kb)
-
-@callback_handler
-async def finish_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-    if data == "finish_yes":
-        chat_id = query.message.chat.id
-        match = match_col.find_one({"chat_id": chat_id})
-        if not match: return
-        summary = f"🏁 Match Ended!\n\n"
-        summary += f"Team A: {match['team_a']['score']} runs\n"
-        summary += f"Team B: {match['team_b']['score']} runs\n"
-        if match["team_b"]["score"] >= match["target"]:
-            summary += f"🎉 Team B won by {10 - match['wickets']} wickets!"
-        else:
-            margin = match["target"] - 1 - match["team_b"]["score"]
-            summary += f"🏆 Team A won by {margin} runs!"
-        await query.edit_message_text(summary)
-        match_col.delete_one({"chat_id": chat_id})
-    elif data == "finish_no":
-        await query.edit_message_text("❌ Match finish cancelled.")
-# === GUIDE / HELP COMMAND ===
-
-@bot_cmd("guide")
-async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "📘 *CCL Group Match Bot Guide*\n\n"
-        "*Setup Commands:*\n"
-        "/cclgroup - Start group match setup\n"
-        "/addA @user - Add player to Team A\n"
-        "/addB @user - Add player to Team B\n"
-        "/removeA 1 - Remove Team A's 1st player\n"
-        "/removeB 2 - Remove Team B's 2nd player\n"
-        "/CapA 1 - Make Team A player 1 the captain\n"
-        "/CapB 2 - Make Team B player 2 the captain\n"
-        "/setovers 5 - Set number of overs\n"
-        "/team - Show team list\n"
-        "/toss - Start toss (auto toss choice prompts)\n\n"
-        "*Match Control:*\n"
-        "/bat 1 - Set striker/non-striker (by index)\n"
-        "/bowl 2 - Set bowler (by index)\n"
-        "/inningswap - Start 2nd innings\n"
-        "/retiredhurt strike/non/bowler - Replace without losing wicket\n"
-        "/retiredout strike/non - Remove batsman with wicket\n"
-        "/bonus A 4 - Add 4 runs to Team A\n"
-        "/penalty B 2 - Deduct 2 runs from Team B\n"
-        "/hostchange - GC admins can take over as host\n"
-        "/endmatch - End match with confirmation\n"
-        "/finish - Use at end of second innings (if chase fails)\n\n"
-        "*During Match:*\n"
-        "/score - View full scoreboard\n"
-        "/bat LMS - Allow only one player to bat\n"
-        "/guide - Show this guide"
+def get_live_score(game):
+    a = game['score']['A']
+    b = game['score']['B']
+    cur = game['current']
+    msg = (
+        f"🏏 *Current Score*\n"
+        f"Team A: {a['runs']} / {a['wickets']} ({a['balls']//6}.{a['balls']%6} overs)\n"
+        f"Team B: {b['runs']} / {b['wickets']} ({b['balls']//6}.{b['balls']%6} overs)\n"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    if cur['striker'] and cur['non_striker']:
+        msg += (
+            f"\nBatting: {get_team_name(cur['bat_team'])}\n"
+            f"Striker: {cur['striker']['name']}\n"
+            f"Non-striker: {cur['non_striker']['name']}\n"
+        )
+    if cur['bowler']:
+        msg += f"Bowler: {cur['bowler']['name']}\n"
+    msg += (
+        f"\nBonus: A +{game['bonus']['A']}, B +{game['bonus']['B']}\n"
+        f"Penalty: A -{game['penalty']['A']}, B -{game['penalty']['B']}"
+    )
+    return msg
 
-# === REGISTER HANDLER ===
+def get_final_scoreboard(game):
+    a = game['score']['A']
+    b = game['score']['B']
+    msg = (
+        f"🏆 *Final Scoreboard*\n"
+        f"Team A: {a['runs']} / {a['wickets']} ({a['balls']//6}.{a['balls']%6} overs)\n"
+        f"Team B: {b['runs']} / {b['wickets']} ({b['balls']//6}.{b['balls']%6} overs)\n"
+        f"\nTop Batsmen (A):\n"
+    )
+    topA = sorted(a['bat_stats'].items(), key=lambda x: x[1]['runs'], reverse=True)[:3]
+    for i, (uid, stats) in enumerate(topA):
+        msg += f"{i+1}. {stats['name']} - {stats['runs']} ({stats['balls']} balls)\n"
+    msg += "\nTop Bowlers (A):\n"
+    topBA = sorted(a['bowl_stats'].items(), key=lambda x: x[1]['wickets'], reverse=True)[:3]
+    for i, (uid, stats) in enumerate(topBA):
+        msg += f"{i+1}. {stats['name']} - {stats['wickets']} wkts\n"
+    msg += "\nTop Batsmen (B):\n"
+    topB = sorted(b['bat_stats'].items(), key=lambda x: x[1]['runs'], reverse=True)[:3]
+    for i, (uid, stats) in enumerate(topB):
+        msg += f"{i+1}. {stats['name']} - {stats['runs']} ({stats['balls']} balls)\n"
+    msg += "\nTop Bowlers (B):\n"
+    topBB = sorted(b['bowl_stats'].items(), key=lambda x: x[1]['wickets'], reverse=True)[:3]
+    for i, (uid, stats) in enumerate(topBB):
+        msg += f"{i+1}. {stats['name']} - {stats['wickets']} wkts\n"
+    # Victory summary
+    if a['runs'] > b['runs']:
+        msg += f"\n🎉 Team A won by {a['runs']-b['runs']} runs"
+    elif b['runs'] > a['runs']:
+        wickets_left = len(game['teams']['B']) - b['wickets']
+        msg += f"\n🎉 Team B won by {wickets_left} wickets"
+    else:
+        msg += "\n🤝 Match Drawn!"
+    return msg
 
-@bot_cmd("register")
-async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# --- (continues with ALL commands & full game logic in next reply, as platform limits reached) ---
+# === COMMANDS CONTINUED ===
+
+# --- MATCH SETUP AND MANAGEMENT COMMANDS ---
+
+async def toss(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match. Use /cclgroup first.")
+        return
+    admins = await get_admins(context, group_id)
+    if not admin_or_host(game, update.effective_user.id, admins):
+        await update.message.reply_text("Only host/admin can start the toss.")
+        return
+    if not game['captains']['A'] or not game['captains']['B']:
+        await update.message.reply_text("Both captains must be set with /CapA and /CapB before the toss.")
+        return
+    capA_id = game['captains']['A']
+    keyboard = [
+        [InlineKeyboardButton("Heads", callback_data="toss_heads"),
+         InlineKeyboardButton("Tails", callback_data="toss_tails")]
+    ]
+    await context.bot.send_message(
+        chat_id=capA_id,
+        text="🪙 Toss time! Choose Heads or Tails.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    await update.message.reply_text(
+        "Toss started! Team A captain will receive a DM to pick Heads or Tails.\n"
+        "After toss, toss winner will choose Bat/Bowl in DM."
+    )
+
+async def toss_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = query.from_user
+    group_id = None
+    for gid, game in games.items():
+        if game['captains']['A'] == user.id:
+            group_id = gid
+            break
+    if not group_id:
+        await query.edit_message_text("You are not the captain for any current match.")
+        return
+    game = games[group_id]
+    toss_choice = query.data.split("_")[1]
+    toss_result = random.choice(["heads", "tails"])
+    toss_winner = 'A' if toss_choice.lower() == toss_result else 'B'
+    game['toss'] = {"winner": toss_winner, "side": toss_result}
+    await save_game(group_id)
+    winner_id = game['captains'][toss_winner]
+    keyboard = [
+        [InlineKeyboardButton("Bat", callback_data=f"toss_bat"),
+         InlineKeyboardButton("Bowl", callback_data=f"toss_bowl")]
+    ]
+    await context.bot.send_message(
+        chat_id=winner_id,
+        text=f"🪙 Toss result: {toss_result.title()}! You won the toss. Choose Bat or Bowl.",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+    await query.edit_message_text(
+        f"Toss result: {toss_result.title()}! Waiting for toss winner to choose Bat/Bowl."
+    )
+
+async def toss_bat_bowl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user = query.from_user
+    bat_or_bowl = query.data.split("_")[1]
+    group_id = None
+    for gid, game in games.items():
+        toss = game.get('toss')
+        if toss and game['captains'][toss['winner']] == user.id:
+            group_id = gid
+            break
+    if not group_id:
+        await query.edit_message_text("You are not the toss winner for any current match.")
+        return
+    game = games[group_id]
+    toss_winner = game['toss']['winner']
+    bat_team = toss_winner if bat_or_bowl == "bat" else get_opposite_team(toss_winner)
+    bowl_team = get_opposite_team(bat_team)
+    game['current']['bat_team'] = bat_team
+    game['current']['bowl_team'] = bowl_team
+    game['status'] = "ready"
+    await save_game(group_id)
+    await query.edit_message_text(
+        f"{get_team_name(bat_team)} will bat first.\n"
+        "Host: Use /bat <index> to set striker, then /bat <index> for non-striker, and /bowl <index> to set the bowler!"
+    )
+    host_id = game['host_id']
+    await context.bot.send_message(
+        chat_id=host_id,
+        text="Now set striker: /bat <index>\n(See player list with /team)"
+    )
+
+async def bat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match.")
+        return
+    admins = await get_admins(context, group_id)
+    if not admin_or_host(game, update.effective_user.id, admins):
+        await update.message.reply_text("Only host/admin can set batsman.")
+        return
+    args = context.args
+    if not args or (args[0].upper() != "LMS" and not args[0].isdigit()):
+        await update.message.reply_text("Usage: /bat <index> OR /bat LMS")
+        return
+    bat_team = game['current']['bat_team']
+    if args[0].upper() == "LMS":
+        game['current']['lms'] = True
+        await save_game(group_id)
+        await update.message.reply_text("Last Man Standing mode activated! Only one batsman will play.")
+        return
+    idx = int(args[0])
+    batsman = get_player_by_index(game, bat_team, idx)
+    if batsman is None:
+        await update.message.reply_text("Invalid index.")
+        return
+    if not game['current']['striker']:
+        game['current']['striker'] = batsman
+        await update.message.reply_text(
+            f"Striker set: {batsman['name']}. Now set non-striker with /bat <index>."
+        )
+    elif not game['current']['non_striker']:
+        if batsman['user_id'] == game['current']['striker']['user_id']:
+            await update.message.reply_text("Striker and non-striker must be different players.")
+            return
+        game['current']['non_striker'] = batsman
+        await update.message.reply_text(
+            f"Non-striker set: {batsman['name']}."
+        )
+        host_id = game['host_id']
+        await context.bot.send_message(
+            chat_id=host_id,
+            text="Now set bowler with /bowl <index> (See player list with /team)"
+        )
+    else:
+        await update.message.reply_text("Both striker and non-striker already set. To change, use /bat again.")
+
+    await save_game(group_id)
+
+async def bowl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match.")
+        return
+    admins = await get_admins(context, group_id)
+    if not admin_or_host(game, update.effective_user.id, admins):
+        await update.message.reply_text("Only host/admin can set bowler.")
+        return
+    args = context.args
+    if not args or not args[0].isdigit():
+        await update.message.reply_text("Usage: /bowl <index>")
+        return
+    bowl_team = game['current']['bowl_team']
+    idx = int(args[0])
+    bowler = get_player_by_index(game, bowl_team, idx)
+    if bowler is None:
+        await update.message.reply_text("Invalid index.")
+        return
+    if game['current']['last_bowler'] and bowler['user_id'] == game['current']['last_bowler']:
+        await update.message.reply_text("A bowler cannot bowl two consecutive overs.")
+        return
+    game['current']['bowler'] = bowler
+    await save_game(group_id)
+    await update.message.reply_text(
+        f"Bowler set: {bowler['name']}."
+    )
+    host_id = game['host_id']
+    await context.bot.send_message(
+        chat_id=host_id,
+        text="Now type /nextball to deliver the first ball of the over."
+    )
+
+async def nextball(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match.")
+        return
+    cur = game['current']
+    if not (cur['striker'] and cur['non_striker'] and cur['bowler']):
+        await update.message.reply_text("Set striker, non-striker and bowler first.")
+        return
+    # DM prompt to batsman and bowler
+    striker = cur['striker']
+    bowler = cur['bowler']
+    await context.bot.send_message(
+        chat_id=striker['user_id'],
+        text="🏏 Your turn to bat! Reply with a number: 0, 1, 2, 3, 4, or 6."
+    )
+    await context.bot.send_message(
+        chat_id=bowler['user_id'],
+        text="🎳 Your turn to bowl! Reply with: Rs, Bouncer, Yorker, Short, Slower, or Knuckle."
+    )
+    cur['inputs'] = {}
+    await save_game(group_id)
+    await update.message.reply_text("Ball in progress. Awaiting DM inputs from striker and bowler...")
+
+async def handle_dm_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    user_data = users_col.find_one({"user_id": user.id})
-    if user_data:
-        return await update.message.reply_text("You're already registered!")
-    users_col.insert_one({
-        "user_id": user.id,
-        "username": user.username or user.first_name,
-        "coins": 0,
-        "games_played": 0,
-        "wins": 0
-    })
-    await update.message.reply_text("✅ Registered successfully!")
+    msg = update.message.text.strip()
+    for group_id, game in games.items():
+        cur = game['current']
+        if cur.get('striker') and cur['striker']['user_id'] == user.id and 'bat' not in cur['inputs']:
+            if msg not in ['0','1','2','3','4','6']:
+                await update.message.reply_text("Send: 0, 1, 2, 3, 4, or 6.")
+                return
+            cur['inputs']['bat'] = int(msg)
+            await update.message.reply_text("Batting input received. Waiting for bowler...")
+        elif cur.get('bowler') and cur['bowler']['user_id'] == user.id and 'bowl' not in cur['inputs']:
+            if msg not in BALL_VARIATION_MAP:
+                await update.message.reply_text("Send: Rs, Bouncer, Yorker, Short, Slower, or Knuckle.")
+                return
+            cur['inputs']['bowl'] = msg
+            await update.message.reply_text("Bowling input received. Waiting for batsman...")
+    for group_id, game in games.items():
+        cur = game['current']
+        if 'bat' in cur['inputs'] and 'bowl' in cur['inputs']:
+            await process_ball(group_id, context)
+            break
 
-# === START COMMAND ===
+async def process_ball(group_id, context):
+    game = games[group_id]
+    cur = game['current']
+    bat_team = cur['bat_team']
+    bowl_team = cur['bowl_team']
+    striker = cur['striker']
+    non_striker = cur['non_striker']
+    bowler = cur['bowler']
+    ball = cur['ball']
+    over = cur['over']
 
-@bot_cmd("start")
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome to CCL Group Match Bot! Use /guide to view all commands.")
+    # 1. Announce over/ball
+    msg1 = f"Over {over} Ball {ball}"
+    await context.bot.send_message(chat_id=group_id, text=msg1)
+    await asyncio.sleep(2)
+    # 2. Bowler commentary
+    msg2 = f"{bowler['name']} bowled a {cur['inputs']['bowl']}!"
+    await context.bot.send_message(chat_id=group_id, text=msg2)
+    await asyncio.sleep(2)
+    # 3. Bat commentary/result
+    run = cur['inputs']['bat']
+    var_num = BALL_VARIATION_MAP[cur['inputs']['bowl']]
+    out = False
+    if run == var_num:
+        # OUT
+        out = True
+        commentary = get_commentary('OUT')
+        gif = get_gif('OUT')
+        await context.bot.send_message(chat_id=group_id, text=f"{striker['name']} is OUT! {commentary}")
+        if gif:
+            await context.bot.send_animation(chat_id=group_id, animation=gif)
+        game['score'][bat_team]['wickets'] += 1
+        # Replace striker with next batsman (prompt host)
+        cur['striker'] = None
+        await context.bot.send_message(
+            chat_id=group_id,
+            text="Host: Set new striker with /bat <index>\n(See /team for indexes.)"
+        )
+    else:
+        commentary = get_commentary(run)
+        gif = get_gif(run)
+        await context.bot.send_message(chat_id=group_id, text=f"{striker['name']} scored {run}! {commentary}")
+        if gif:
+            await context.bot.send_animation(chat_id=group_id, animation=gif)
+        game['score'][bat_team]['runs'] += run
+        # Batting stats
+        bst = game['score'][bat_team]['bat_stats'].setdefault(striker['user_id'], {"runs":0, "balls":0, "name":striker['name']})
+        bst['runs'] += run
+        bst['balls'] += 1
+        # Bowling stats
+        bowl_stats = game['score'][bowl_team]['bowl_stats'].setdefault(bowler['user_id'], {"balls":0, "wickets":0, "name":bowler['name']})
+        bowl_stats['balls'] += 1
+        if bst['runs'] >= 100 and not bst.get("hundred_announced"):
+            msg = get_commentary('HUNDRED')
+            gif = get_gif('HUNDRED')
+            await context.bot.send_message(chat_id=group_id, text=msg)
+            if gif: await context.bot.send_animation(chat_id=group_id, animation=gif)
+            bst["hundred_announced"] = True
+        elif bst['runs'] >= 50 and not bst.get("fifty_announced"):
+            msg = get_commentary('FIFTY')
+            gif = get_gif('FIFTY')
+            await context.bot.send_message(chat_id=group_id, text=msg)
+            if gif: await context.bot.send_animation(chat_id=group_id, animation=gif)
+            bst["fifty_announced"] = True
+        # Strike rotation
+        if run % 2 == 1:
+            cur['striker'], cur['non_striker'] = cur['non_striker'], cur['striker']
+    # Ball/over increment
+    cur['ball'] += 1
+    game['score'][bat_team]['balls'] += 1
+    if cur['ball'] > 6:
+        cur['over'] += 1
+        cur['ball'] = 1
+        if not out and run % 2 == 0:
+            cur['striker'], cur['non_striker'] = cur['non_striker'], cur['striker']
+        cur['last_bowler'] = cur['bowler']['user_id']
+        cur['bowler'] = None
+        await context.bot.send_message(
+            chat_id=group_id,
+            text="Over completed! Host: Set bowler for next over with /bowl <index>."
+        )
+    # End of match or innings logic not shown (see finish/inningswap below)
+    await save_game(group_id)
+    cur['inputs'] = {}
 
-# === RUN BOT ===
+async def retiredhurt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match.")
+        return
+    admins = await get_admins(context, group_id)
+    if not admin_or_host(game, update.effective_user.id, admins):
+        await update.message.reply_text("Only host/admin can retire players.")
+        return
+    args = context.args
+    if not args or args[0] not in ["strike", "non", "bowler"]:
+        await update.message.reply_text("Usage: /retiredhurt strike/non/bowler")
+        return
+    who = args[0]
+    if who == "strike":
+        game['current']['striker'] = None
+    elif who == "non":
+        game['current']['non_striker'] = None
+    elif who == "bowler":
+        game['current']['bowler'] = None
+    await save_game(group_id)
+    await update.message.reply_text("Player retired hurt. Host: Replace with new player.")
+
+async def retiredout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match.")
+        return
+    admins = await get_admins(context, group_id)
+    if not admin_or_host(game, update.effective_user.id, admins):
+        await update.message.reply_text("Only host/admin can retire players.")
+        return
+    args = context.args
+    if not args or args[0] not in ["strike", "non"]:
+        await update.message.reply_text("Usage: /retiredout strike/non")
+        return
+    who = args[0]
+    bat_team = game['current']['bat_team']
+    game['score'][bat_team]['wickets'] += 1
+    if who == "strike":
+        game['current']['striker'] = None
+    elif who == "non":
+        game['current']['non_striker'] = None
+    await save_game(group_id)
+    await update.message.reply_text("Player retired out (counts as wicket). Host: Replace with new player.")
+
+async def inningswap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match.")
+        return
+    admins = await get_admins(context, group_id)
+    if not admin_or_host(game, update.effective_user.id, admins):
+        await update.message.reply_text("Only host/admin can swap innings.")
+        return
+    game['current']['bat_team'], game['current']['bowl_team'] = game['current']['bowl_team'], game['current']['bat_team']
+    game['current']['striker'] = None
+    game['current']['non_striker'] = None
+    game['current']['bowler'] = None
+    game['current']['last_bowler'] = None
+    game['current']['over'] = 1
+    game['current']['ball'] = 1
+    game['current']['inputs'] = {}
+    game['innings'] += 1
+    await save_game(group_id)
+    await update.message.reply_text("Innings swapped! Host: Set striker, non-striker, and bowler for the new innings.")
+
+async def finish(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match.")
+        return
+    admins = await get_admins(context, group_id)
+    if not admin_or_host(game, update.effective_user.id, admins):
+        await update.message.reply_text("Only host/admin can finish the match.")
+        return
+    game['finished'] = True
+    await save_game(group_id)
+    await update.message.reply_text("Match finished manually.")
+    await context.bot.send_message(chat_id=group_id, text=get_final_scoreboard(game), parse_mode="Markdown")
+
+async def endmatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match.")
+        return
+    admins = await get_admins(context, group_id)
+    if not admin_or_host(game, update.effective_user.id, admins):
+        await update.message.reply_text("Only host/admin can end the match.")
+        return
+    game['finished'] = True
+    await save_game(group_id)
+    await update.message.reply_text("Match ended (early).")
+    await context.bot.send_message(chat_id=group_id, text=get_final_scoreboard(game), parse_mode="Markdown")
+
+async def hostchange(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match.")
+        return
+    admins = await get_admins(context, group_id)
+    if not any(admin.user.id == update.effective_user.id for admin in admins):
+        await update.message.reply_text("Only a group admin can become host.")
+        return
+    game['host_id'] = update.effective_user.id
+    await save_game(group_id)
+    await update.message.reply_text(f"{update.effective_user.full_name} is now the host.")
+
+async def bonus(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match.")
+        return
+    admins = await get_admins(context, group_id)
+    if not admin_or_host(game, update.effective_user.id, admins):
+        await update.message.reply_text("Only host/admin can give bonus.")
+        return
+    args = context.args
+    if not args or len(args) != 2 or args[0] not in ("A","B") or not args[1].isdigit():
+        await update.message.reply_text("Usage: /bonus A|B <runs>")
+        return
+    team, runs = args[0], int(args[1])
+    game['bonus'][team] += runs
+    game['score'][team]['runs'] += runs
+    await save_game(group_id)
+    await update.message.reply_text(f"Bonus: {runs} runs added to Team {team}.")
+
+async def penalty(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match.")
+        return
+    admins = await get_admins(context, group_id)
+    if not admin_or_host(game, update.effective_user.id, admins):
+        await update.message.reply_text("Only host/admin can give penalty.")
+        return
+    args = context.args
+    if not args or len(args) != 2 or args[0] not in ("A","B") or not args[1].isdigit():
+        await update.message.reply_text("Usage: /penalty A|B <runs>")
+        return
+    team, runs = args[0], int(args[1])
+    game['penalty'][team] += runs
+    game['score'][team]['runs'] -= runs
+    await save_game(group_id)
+    await update.message.reply_text(f"Penalty: {runs} runs deducted from Team {team}.")
+
+async def score(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    group_id = update.effective_chat.id
+    game = games.get(group_id)
+    if not game:
+        await update.message.reply_text("No active match.")
+        return
+    await update.message.reply_text(get_live_score(game), parse_mode="Markdown")
+
+async def guide(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = (
+        "🏏 *CCL Telegram Cricket Bot - Full Guide*\n"
+        "\n"
+        "🟢 *Match Initialization:*\n"
+        "/start — Start using the bot in DM\n"
+        "/register — Register for a match (DM)\n"
+        "/cclgroup — Start a new match in group (becomes Host)\n"
+        "\n"
+        "👥 *Player & Team Management:*\n"
+        "/addA @username — Add player to Team A\n"
+        "/addB @username — Add player to Team B\n"
+        "/removeA <index> — Remove player from Team A\n"
+        "/removeB <index> — Remove player from Team B\n"
+        "/CapA <index> — Set captain for Team A\n"
+        "/CapB <index> — Set captain for Team B\n"
+        "/team — Show current teams\n"
+        "\n"
+        "⚙️ *Match Config:*\n"
+        "/setovers <number> — Set number of overs\n"
+        "/toss — Start toss\n"
+        "\n"
+        "🏏 *Player Selection:*\n"
+        "/bat <index> — Set striker/non-striker\n"
+        "/bowl <index> — Set bowler\n"
+        "/bat LMS — Last Man Standing mode\n"
+        "\n"
+        "🔄 *During Match:*\n"
+        "/nextball — Deliver next ball (after striker/bowler DM input)\n"
+        "\n"
+        "🚑 *Retire/Recovery:*\n"
+        "/retiredhurt strike/non/bowler — Retire hurt\n"
+        "/retiredout strike/non — Retire out (wicket)\n"
+        "\n"
+        "🔁 *Innings:*\n"
+        "/inningswap — Swap innings\n"
+        "\n"
+        "➕/➖ *Bonus & Penalty:*\n"
+        "/bonus A 5 — Add 5 runs to Team A\n"
+        "/penalty B 6 — Deduct 6 runs from Team B\n"
+        "\n"
+        "📊 *Score & Result:*\n"
+        "/score — Show scoreboard\n"
+        "\n"
+        "🛑 *Finish:*\n"
+        "/finish — Finish match\n"
+        "/endmatch — End match early\n"
+        "\n"
+        "👑 *Host Management:*\n"
+        "/hostchange — GC admin can take host\n"
+        "\n"
+        "ℹ️ After every step, host will receive instructions for next action.\n"
+        "\n"
+        "🟡 *How to Play a Ball:*\n"
+        "1. Host types /nextball in group.\n"
+        "2. Striker gets a DM: Reply 0,1,2,3,4,6.\n"
+        "3. Bowler gets a DM: Reply Rs, Bouncer, Yorker, Short, Slower, Knuckle.\n"
+        "4. Bot posts commentary in group automatically.\n"
+        "\n"
+        "Strike changes if batsman hits an odd run. At over end, strike rotates only if last run is even.\n"
+        "No fixed wicket limit—host decides when to finish or swap innings.\n"
+        "For any confusion, ask /guide anytime!"
+    )
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+# === MAIN BOT STARTUP ===
+
+def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("register", register))
+    app.add_handler(CommandHandler("cclgroup", cclgroup))
+    app.add_handler(CommandHandler("addA", add_team))
+    app.add_handler(CommandHandler("addB", add_team))
+    app.add_handler(CommandHandler("removeA", remove_team))
+    app.add_handler(CommandHandler("removeB", remove_team))
+    app.add_handler(CommandHandler("CapA", set_captain))
+    app.add_handler(CommandHandler("CapB", set_captain))
+    app.add_handler(CommandHandler("team", team_command))
+    app.add_handler(CommandHandler("setovers", set_overs))
+    app.add_handler(CommandHandler("toss", toss))
+    app.add_handler(CallbackQueryHandler(toss_choice, pattern="^toss_(heads|tails)$"))
+    app.add_handler(CallbackQueryHandler(toss_bat_bowl, pattern="^toss_(bat|bowl)$"))
+    app.add_handler(CommandHandler("bat", bat))
+    app.add_handler(CommandHandler("bowl", bowl))
+    app.add_handler(CommandHandler("nextball", nextball))
+    app.add_handler(CommandHandler("retiredhurt", retiredhurt))
+    app.add_handler(CommandHandler("retiredout", retiredout))
+    app.add_handler(CommandHandler("inningswap", inningswap))
+    app.add_handler(CommandHandler("finish", finish))
+    app.add_handler(CommandHandler("endmatch", endmatch))
+    app.add_handler(CommandHandler("hostchange", hostchange))
+    app.add_handler(CommandHandler("bonus", bonus))
+    app.add_handler(CommandHandler("penalty", penalty))
+    app.add_handler(CommandHandler("score", score))
+    app.add_handler(CommandHandler("guide", guide))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT, handle_dm_input))
+    print("🏏 CCL Cricket Bot is running!")
+    app.run_polling()
 
 if __name__ == "__main__":
-    app.run_polling()
+    main()
