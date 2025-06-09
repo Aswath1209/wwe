@@ -124,6 +124,8 @@ async def save_game(group_id):
         {"$set": games[group_id]},
         upsert=True
     )
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Welcome to the bot!")
 
 async def load_game(group_id):
     doc = await db.games.find_one({"group_id": group_id})
