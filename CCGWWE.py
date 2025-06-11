@@ -998,7 +998,7 @@ async def start_next_tourney_match(group_id, context: ContextTypes.DEFAULT_TYPE)
     idx = tourney["current_match_index"]
 
     if idx >= len(tourney["matches"]):
-        return  # Safety check — shouldn't happen
+        return  # No more matches
 
     p1, p2 = tourney["matches"][idx]
     match_id = str(uuid.uuid4())
@@ -1022,23 +1022,23 @@ async def start_next_tourney_match(group_id, context: ContextTypes.DEFAULT_TYPE)
         "century_announced": False,
         "bet_amount": 0,
         "message_id": None,
-        "is_tournament": True  # So you can detect tournament-specific logic
+        "is_tournament": True
     }
 
-    # Register the match in your match dictionaries
     CCL_MATCHES[match_id] = match
     USER_CCL_MATCH[p1] = match_id
     USER_CCL_MATCH[p2] = match_id
     GROUP_CCL_MATCH[group_id] = match_id
 
-    # Announce the match in group
+    # Debug log
+    print("✅ start_next_tourney_match triggered")
+
     await context.bot.send_message(
         group_id,
-        f"🏏 Match {idx + 1} is starting!\n"
+        f"🏏 Match {idx + 1} is starting:\n"
         f"{USERS[p1]['name']} vs {USERS[p2]['name']}"
     )
 
-    # Toss prompt (same as CCL logic)
     await context.bot.send_message(
         p1,
         "🪙 Toss Time!\nChoose Heads or Tails:",
@@ -1046,19 +1046,31 @@ async def start_next_tourney_match(group_id, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
-      # not used in tournament flow
+
+
+    
 
 async def send_schedule(chat_id, context: ContextTypes.DEFAULT_TYPE):
     tourney = TOURNEYS[chat_id]
-    text = "📅 Match Schedule:\n"
-    for i, match in enumerate(tourney["matches"], 1):
-        p1, p2 = match
-        text += f"{i}. {USERS[p1]['name']} vs {USERS[p2]['name']}\n"
+    matches = tourney["matches"]
+
+    text = "🏏 Tournament Schedule:\n"
+    for i, (p1, p2) in enumerate(matches, 1):
+        name1 = USERS[p1]["name"]
+        name2 = USERS[p2]["name"]
+        text += f"{i}. {name1} vs {name2}\n"
+
     await context.bot.send_message(chat_id, text)
 
-    # After showing schedule, start first match
-    await asyncio.sleep(3)
-    await start_next_tourney_match(chat_id, context)
+    # Debug log
+    print("✅ send_schedule called successfully")
+
+    # Start first match
+    try:
+        await asyncio.sleep(3)
+        await start_next_tourney_match(chat_id, context)
+    except Exception as e:
+        await context.bot.send_message(chat_id, f"⚠️ Error starting match: {e}")
 
     
 import logging
