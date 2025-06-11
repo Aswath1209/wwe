@@ -22,7 +22,7 @@ MONGO_URL = "mongodb://mongo:GhpHMiZizYnvJfKIQKxoDbRyzBCpqEyC@mainline.proxy.rlw
 
 # --- MongoDB Setup ---
 mongo_client = AsyncIOMotorClient(MONGO_URL)
-db = mongo_client.handcricket
+db = mongo_client.tourhandcricket
 users_collection = db.users
 
 # --- Logging ---
