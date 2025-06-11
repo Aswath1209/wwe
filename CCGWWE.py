@@ -1,4 +1,4 @@
-import loggin
+import logging
 import random
 from datetime import datetime, timedelta
 
@@ -1054,7 +1054,7 @@ from telegram.ext import (
 )
 
 # --- Configuration ---
-BOT_TOKEN = "8198938492:AAFE0CxaXVeB8cpyphp7pSV98oiOKlf5Jwo"  # Replace with your actual Telegram bot token
+BOT_TOKEN = "8133604799:AAF2dE86UjRxfAdUcqyoz3O9RgaCeTwaoHM"  # Replace with your actual Telegram bot token
 
 logger = logging.getLogger(__name__)
 
