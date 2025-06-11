@@ -1022,25 +1022,40 @@ async def start_next_tourney_match(group_id, context: ContextTypes.DEFAULT_TYPE)
         "message_id": None,
     }
 
-    CCL_MATCHES[match_id] = match
-    USER_CCL_MATCH[p1] = match_id
-    USER_CCL_MATCH[p2] = match_id
-    GROUP_CCL_MATCH[group_id] = match_id
+     match["state"] = "toss"
+     match["message_id"] = None
+     match["bet_amount"] = 0  # Tournament matches are free, no bet
+     match["is_tournament"] = True  # Optional: flag for special logic
+     match["half_century_announced"] = False
+     match["century_announced"] = False
+     match["bat_choice"] = None
+     match["bowl_choice"] = None
+     match["balls"] = 0
+     match["score"] = 0
+     match["innings"] = 1
+     match["target"] = None
 
-    await context.bot.send_message(
-        group_id,
-        f"🏏 Match {idx + 1} starting:\n"
-        f"{USERS[p1]['name']} vs {USERS[p2]['name']}"
-    )
+# Save match
+CCL_MATCHES[match_id] = match
+USER_CCL_MATCH[p1] = match_id
+USER_CCL_MATCH[p2] = match_id
+GROUP_CCL_MATCH[group_id] = match_id
 
-    await context.bot.send_message(
-        p1,
-        "You're the match initiator! Choose Heads or Tails for the toss:",
-        reply_markup=toss_keyboard(match_id)
-    )
+# Announce in group
+await context.bot.send_message(
+    group_id,
+    f"🏏 Match {idx + 1} starting:\n"
+    f"{USERS[p1]['name']} vs {USERS[p2]['name']}"
+)
 
-    match["state"] = "toss"
-    match["message_id"] = None  # not used in tournament flow
+# Toss in DM
+await context.bot.send_message(
+    p1,
+    "🪙 Toss Time!\nChoose Heads or Tails:",
+    reply_markup=toss_keyboard(match_id)
+)
+
+      # not used in tournament flow
 
 async def send_schedule(chat_id, context: ContextTypes.DEFAULT_TYPE):
     tourney = TOURNEYS[chat_id]
