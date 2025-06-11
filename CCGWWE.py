@@ -1042,6 +1042,17 @@ async def start_next_tourney_match(group_id, context: ContextTypes.DEFAULT_TYPE)
     match["state"] = "toss"
     match["message_id"] = None  # not used in tournament flow
 
+async def send_schedule(chat_id, context: ContextTypes.DEFAULT_TYPE):
+    tourney = TOURNEYS[chat_id]
+    text = "📅 Match Schedule:\n"
+    for i, match in enumerate(tourney["matches"], 1):
+        p1, p2 = match
+        text += f"{i}. {USERS[p1]['name']} vs {USERS[p2]['name']}\n"
+    await context.bot.send_message(chat_id, text)
+
+    # After showing schedule, start first match
+    await asyncio.sleep(3)
+    await start_next_tourney_match(chat_id, context)
 
     
 import logging
