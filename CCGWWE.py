@@ -991,12 +991,14 @@ async def finish_match(context: ContextTypes.DEFAULT_TYPE, match, winner):
                 await asyncio.sleep(3)
                 await start_next_tourney_match(chat_id, context)
 
+import uuid
+
 async def start_next_tourney_match(group_id, context: ContextTypes.DEFAULT_TYPE):
     tourney = TOURNEYS[group_id]
     idx = tourney["current_match_index"]
 
     if idx >= len(tourney["matches"]):
-        return  # Safety check
+        return  # Safety check — shouldn't happen
 
     p1, p2 = tourney["matches"][idx]
     match_id = str(uuid.uuid4())
@@ -1020,40 +1022,29 @@ async def start_next_tourney_match(group_id, context: ContextTypes.DEFAULT_TYPE)
         "century_announced": False,
         "bet_amount": 0,
         "message_id": None,
+        "is_tournament": True  # So you can detect tournament-specific logic
     }
 
-     match["state"] = "toss"
-     match["message_id"] = None
-     match["bet_amount"] = 0  # Tournament matches are free, no bet
-     match["is_tournament"] = True  # Optional: flag for special logic
-     match["half_century_announced"] = False
-     match["century_announced"] = False
-     match["bat_choice"] = None
-     match["bowl_choice"] = None
-     match["balls"] = 0
-     match["score"] = 0
-     match["innings"] = 1
-     match["target"] = None
+    # Register the match in your match dictionaries
+    CCL_MATCHES[match_id] = match
+    USER_CCL_MATCH[p1] = match_id
+    USER_CCL_MATCH[p2] = match_id
+    GROUP_CCL_MATCH[group_id] = match_id
 
-# Save match
-CCL_MATCHES[match_id] = match
-USER_CCL_MATCH[p1] = match_id
-USER_CCL_MATCH[p2] = match_id
-GROUP_CCL_MATCH[group_id] = match_id
+    # Announce the match in group
+    await context.bot.send_message(
+        group_id,
+        f"🏏 Match {idx + 1} is starting!\n"
+        f"{USERS[p1]['name']} vs {USERS[p2]['name']}"
+    )
 
-# Announce in group
-await context.bot.send_message(
-    group_id,
-    f"🏏 Match {idx + 1} starting:\n"
-    f"{USERS[p1]['name']} vs {USERS[p2]['name']}"
-)
+    # Toss prompt (same as CCL logic)
+    await context.bot.send_message(
+        p1,
+        "🪙 Toss Time!\nChoose Heads or Tails:",
+        reply_markup=toss_keyboard(match_id)
+    )
 
-# Toss in DM
-await context.bot.send_message(
-    p1,
-    "🪙 Toss Time!\nChoose Heads or Tails:",
-    reply_markup=toss_keyboard(match_id)
-)
 
       # not used in tournament flow
 
