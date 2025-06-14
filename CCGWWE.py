@@ -37,6 +37,7 @@ GROUP_CCL_MATCH = {}  # group_chat_id -> match_id or None
 TOURNEYS = {}  # group_id -> tournament object
 # --- Helper Functions ---
 
+
 def get_username(user):
     return user.first_name or user.username or "Player"
 
@@ -1072,6 +1073,616 @@ async def send_schedule(chat_id, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await context.bot.send_message(chat_id, f"⚠️ Error starting match: {e}")
 
+async def cclteam(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("This command can only be used in groups.")
+        return
+
+    if GROUP_CCL_MATCH.get(chat.id):
+        await update.message.reply_text("A match is already in progress.")
+        return
+
+    match_id = str(uuid.uuid4())
+    match = {
+        "match_id": match_id,
+        "group_id": chat.id,
+        "team_a": {
+            "captain": user.id,
+            "players": [user.id],
+        },
+        "team_b": {
+            "captain": None,
+            "players": [],
+        },
+        "state": "waiting_for_team_b",
+        "message_id": None,
+    }
+
+    TEAM_MATCHES[chat.id] = match
+    GROUP_CCL_MATCH[chat.id] = match_id
+    USER_CCL_MATCH[user.id] = match_id
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Join as Team B Captain", callback_data=f"jointeam_{match_id}")],
+        [InlineKeyboardButton("❌ Cancel Match", callback_data=f"cancelteam_{match_id}")]
+    ])
+
+    msg = await update.message.reply_text(
+        f"🏏 *Team Test Match Started!*\n"
+        f"{user.mention_html()} is the captain of *Team A*.\n\n"
+        f"Waiting for someone to join as Team B captain...",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+
+    match["message_id"] = msg.message_id
+
+from telegram.ext import CallbackQueryHandler
+
+async def handle_team_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    data = query.data
+
+    if not data.startswith(("jointeam_", "cancelteam_")):
+        return
+
+    match_id = data.split("_")[1]
+    chat_id = update.effective_chat.id if update.effective_chat else None
+
+    # Locate match using group_id
+    match = None
+    for mid, m in TEAM_MATCHES.items():
+        if m["match_id"] == match_id:
+            match = m
+            chat_id = m["group_id"]
+            break
+
+    if not match:
+        await query.answer("Match not found or expired.", show_alert=True)
+        return
+
+    # Handle Join
+    if data.startswith("jointeam_"):
+        if match["team_b"]["captain"]:
+            await query.answer("Team B captain already joined.", show_alert=True)
+            return
+
+        if user.id == match["team_a"]["captain"]:
+            await query.answer("You are already Team A captain.")
+            return
+
+        match["team_b"]["captain"] = user.id
+        match["team_b"]["players"].append(user.id)
+        USER_CCL_MATCH[user.id] = match["match_id"]
+        GROUP_CCL_MATCH[chat_id] = match["match_id"]
+
+        await query.edit_message_text(
+            f"🏏 *Team Captains Set!*\n"
+            f"Team A 🟥: {context.bot.get_chat(match['team_a']['captain']).mention_html()}\n"
+            f"Team B 🟦: {user.mention_html()}\n\n"
+            f"Captains, use /addplayer to build your teams.",
+            parse_mode="HTML"
+        )
+        return
+
+    # Handle Cancel
+    elif data.startswith("cancelteam_"):
+        if user.id != match["team_a"]["captain"]:
+            await query.answer("Only Team A captain can cancel this.", show_alert=True)
+            return
+
+        await query.edit_message_text("❌ Team match cancelled.")
+        del TEAM_MATCHES[chat_id]
+        del GROUP_CCL_MATCH[chat_id]
+        USER_CCL_MATCH.pop(match["team_a"]["captain"], None)
+
+async def addplayer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("This command can only be used in groups.")
+        return
+
+    match = TEAM_MATCHES.get(chat.id)
+    if not match:
+        await update.message.reply_text("No match found. Start one with /cclteam.")
+        return
+
+    if user.id != match["team_a"]["captain"] and user.id != match["team_b"]["captain"]:
+        await update.message.reply_text("Only team captains can add players.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /addplayer @username or user ID")
+        return
+
+    try:
+        target = context.args[0]
+        if target.startswith("@"):
+            member = await context.bot.get_chat_member(chat.id, target)
+            player_id = member.user.id
+        else:
+            player_id = int(target)
+    except:
+        await update.message.reply_text("Invalid user.")
+        return
+
+    team_key = "team_a" if user.id == match["team_a"]["captain"] else "team_b"
+    team = match[team_key]["players"]
+
+    if player_id in team:
+        await update.message.reply_text("Player already in your team.")
+        return
+
+    team.append(player_id)
+    await update.message.reply_text(f"✅ Player added to Team {'A' if team_key == 'team_a' else 'B'}.")
+
+async def removeplayer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("This command can only be used in groups.")
+        return
+
+    match = TEAM_MATCHES.get(chat.id)
+    if not match:
+        await update.message.reply_text("No match found.")
+        return
+
+    team_key = None
+    if user.id == match["team_a"]["captain"]:
+        team_key = "team_a"
+    elif user.id == match["team_b"]["captain"]:
+        team_key = "team_b"
+
+    if not team_key:
+        await update.message.reply_text("Only captains can remove players.")
+        return
+
+    team = match[team_key]["players"]
+    if len(team) <= 1:
+        await update.message.reply_text("You can't remove the only player (captain) in the team.")
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /removeplayer <index>")
+        return
+
+    index = int(context.args[0])
+    if index < 0 or index >= len(team):
+        await update.message.reply_text("Invalid index.")
+        return
+
+    removed_id = team.pop(index)
+    await update.message.reply_text(f"❌ Removed player with ID: {removed_id} from your team.")
+
+async def start_team_toss(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    match = TEAM_MATCHES.get(chat.id)
+    if not match:
+        await update.message.reply_text("No team match in progress.")
+        return
+
+    if match["state"] != "waiting_for_toss":
+        await update.message.reply_text("Toss has already been done or teams not ready.")
+        return
+
+    team_a_cap = match["team_a"]["captain"]
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🪙 Heads", callback_data="teamtoss_heads"),
+         InlineKeyboardButton("🪙 Tails", callback_data="teamtoss_tails")]
+    ])
+
+    await context.bot.send_message(
+        chat.id,
+        f"🧢 Team A Captain ({context.bot.get_chat(team_a_cap).mention_html()}) — choose Heads or Tails:",
+        reply_markup=keyboard,
+        parse_mode="HTML"
+    )
+    match["state"] = "toss_pending"
+
+async def handle_team_toss_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    user = update.effective_user
+
+    if not data.startswith("teamtoss_"):
+        return
+
+    choice = data.split("_")[1]
+    chat_id = update.effective_chat.id
+    match = TEAM_MATCHES.get(chat_id)
+
+    if not match:
+        await query.answer("No active match.")
+        return
+
+    if user.id != match["team_a"]["captain"]:
+        await query.answer("Only Team A captain can toss.", show_alert=True)
+        return
+
+    toss_result = random.choice(["heads", "tails"])
+    team_a_won = choice == toss_result
+    winner = "team_a" if team_a_won else "team_b"
+    match["toss_winner"] = winner
+    match["state"] = "awaiting_choice"
+
+    toss_text = f"🪙 Toss Result: *{toss_result.title()}*\n"
+    toss_text += f"{'Team A' if team_a_won else 'Team B'} won the toss."
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏏 Bat First", callback_data="teamchoice_bat"),
+         InlineKeyboardButton("🎯 Bowl First", callback_data="teamchoice_bowl")]
+    ])
+
+    await query.edit_message_text(
+        toss_text + "\nChoose your action:",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+async def handle_team_choice_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    chat_id = update.effective_chat.id
+    user = update.effective_user
+
+    if not data.startswith("teamchoice_"):
+        return
+
+    match = TEAM_MATCHES.get(chat_id)
+    if not match:
+        await query.answer("Match not found.")
+        return
+
+    winner_key = match["toss_winner"]
+    winner_id = match[winner_key]["captain"]
+    if user.id != winner_id:
+        await query.answer("Only toss winner can choose.", show_alert=True)
+        return
+
+    decision = data.split("_")[1]
+    match["batting_team"] = winner_key if decision == "bat" else ("team_b" if winner_key == "team_a" else "team_a")
+    match["bowling_team"] = "team_b" if match["batting_team"] == "team_a" else "team_a"
+    match["state"] = "match_ready"
+
+    await query.edit_message_text(
+        f"✅ {('Team A' if match['batting_team'] == 'team_a' else 'Team B')} will bat first.\n"
+        f"Match setup complete! Get ready to play!"
+    )
+
+async def start_team_match(context: ContextTypes.DEFAULT_TYPE, match):
+    batting_team = match["batting_team"]
+    bowling_team = match["bowling_team"]
+    group_id = match["group_id"]
+
+    striker = match[batting_team]["players"][0]
+    bowler = match[bowling_team]["players"][0]
+
+    match["batting_user"] = striker
+    match["bowling_user"] = bowler
+    match["balls"] = 0
+    match["score"] = 0
+    match["wickets"] = 0
+    match["overs"] = 2
+    match["state"] = "in_play"
+
+    # DM batter to send run
+    await context.bot.send_message(
+        striker,
+        "🎯 Your turn to bat!\nSend a number (0-6) as your run:"
+    )
+
+    # DM bowler to send variation
+    await context.bot.send_message(
+        bowler,
+        "💥 Your turn to bowl!\nSend a variation: Slower, Knuckle, Bouncer, etc."
+    )
+
+    await context.bot.send_message(group_id, f"🏏 Match Started!\n{USERS[striker]['name']} vs {USERS[bowler]['name']}")
+
+async def process_team_ball(context, match, run, variation):
+    group_id = match["group_id"]
+    striker = match["batting_user"]
+    bowler = match["bowling_user"]
+    balls = match["balls"] + 1
+    match["balls"] = balls
+
+    over = balls // 6 + 1
+    ball_in_over = balls % 6 or 6
+
+    # Send Over + Ball
+    await context.bot.send_message(striker, f"📣 Over {over}, Ball {ball_in_over}")
+    await context.bot.send_message(bowler, f"📣 Over {over}, Ball {ball_in_over}")
+    await asyncio.sleep(3)
+
+    await context.bot.send_message(group_id, f"🎳 {USERS[bowler]['name']} bowls a {variation}!")
+    await asyncio.sleep(3)
+
+    variation_value = VARIATION_MAP.get(variation.lower().capitalize(), -1)
+
+    if run == variation_value:
+        match["wickets"] += 1
+        commentary = random.choice(OUT_COMMENTS)
+        gif = random.choice(OUT_GIFS)
+    else:
+        match["score"] += run
+        commentary = random.choice(RUN_COMMENTS.get(run, ["Good shot!"]))
+        gif = random.choice(RUN_GIFS.get(run, []))
+
+    await context.bot.send_message(group_id, f"🎙️ {commentary}")
+    if gif:
+        await context.bot.send_animation(group_id, gif)
+
+    # Send scoreboard
+    await send_full_scoreboard(context, match)
+
+    # Check end of innings
+    if balls >= match["overs"] * 6 or match["wickets"] >= len(match[batting_team]["players"]):
+        await context.bot.send_message(group_id, "🏁 Innings over.")
+        # Move to next innings or end
+async def handle_run_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in USER_CCL_MATCH:
+        return
+
+    match_id = USER_CCL_MATCH[user.id]
+    match = None
+    for m in TEAM_MATCHES.values():
+        if m["match_id"] == match_id:
+            match = m
+            break
+    if not match or match.get("state") != "in_play":
+        return
+
+    if user.id != match.get("batting_user"):
+        await update.message.reply_text("It's not your turn to bat.")
+        return
+
+    try:
+        run = int(update.message.text.strip())
+        if run not in range(0, 7):
+            raise ValueError
+    except:
+        await update.message.reply_text("Send a number between 0–6.")
+        return
+
+    match["pending_run"] = run
+    await update.message.reply_text("✅ Run received. Waiting for bowler...")
+
+    if "pending_variation" in match:
+        await process_team_ball(context, match, match["pending_run"], match["pending_variation"])
+        match.pop("pending_run")
+        match.pop("pending_variation")
+
+async def handle_variation_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if user.id not in USER_CCL_MATCH:
+        return
+
+    match_id = USER_CCL_MATCH[user.id]
+    match = None
+    for m in TEAM_MATCHES.values():
+        if m["match_id"] == match_id:
+            match = m
+            break
+    if not match or match.get("state") != "in_play":
+        return
+
+    if user.id != match.get("bowling_user"):
+        await update.message.reply_text("It's not your turn to bowl.")
+        return
+
+    variation = update.message.text.strip().capitalize()
+    if variation not in VARIATION_MAP:
+        await update.message.reply_text("Invalid variation. Try: Slower, Knuckle, Bouncer, etc.")
+        return
+
+    match["pending_variation"] = variation
+    await update.message.reply_text("✅ Variation received. Waiting for batter...")
+
+    if "pending_run" in match:
+        await process_team_ball(context, match, match["pending_run"], match["pending_variation"])
+        match.pop("pending_run")
+        match.pop("pending_variation")
+
+async def rebat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    user = update.effective_user
+
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("This command can only be used in groups.")
+        return
+
+    match = TEAM_MATCHES.get(chat.id)
+    if not match or match.get("state") != "in_play":
+        await update.message.reply_text("❌ No ongoing match.")
+        return
+
+    current_team_key = match.get("batting_team")
+    if user.id != match[current_team_key]["captain"]:
+        await update.message.reply_text("Only the *batting team's captain* can rebat.", parse_mode="Markdown")
+        return
+
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /rebat <player index>")
+        return
+
+    index = int(context.args[0])
+    team_players = match[current_team_key]["players"]
+
+    if index < 0 or index >= len(team_players):
+        await update.message.reply_text("❌ Invalid index.")
+        return
+
+    # Prevent rebats beyond 1 per innings
+    rebats_used = match.setdefault("rebats_used", {"A": [], "B": []})
+    rebats_list = rebats_used["A" if current_team_key == "team_a" else "B"]
+    if len(rebats_list) >= 1:
+        await update.message.reply_text("⚠️ You can only use *1 rebat per innings*.", parse_mode="Markdown")
+        return
+
+    if index in rebats_list:
+        await update.message.reply_text("❌ This player has already been rebatted.")
+        return
+
+    rebatted_player = team_players[index]
+
+    match["next_rebat"] = rebatted_player
+    rebats_list.append(index)
+
+    await update.message.reply_text(
+        f"🔁 Rebat confirmed! Player at index {index} will *bat again* after the next wicket.\n"
+        f"Runs will be tracked separately as 'Rebat' runs.",
+        parse_mode="Markdown"
+    )
+
+players = match[match["batting_team"]]["players"]
+dismissed = match.get("dismissed_players", [])
+dismissed.append(match["batting_user"])
+match["dismissed_players"] = dismissed
+
+remaining_players = [p for p in players if p not in dismissed]
+
+# 🧍 LMS Logic
+if len(remaining_players) == 1:
+    match["batting_user"] = remaining_players[0]
+    match["is_lms"] = True
+    await context.bot.send_message(
+        group_id,
+        f"⚠️ *Last Man Standing!* {USERS[remaining_players[0]]['name']} is the only one left!",
+        parse_mode="Markdown"
+    )
+
+elif len(remaining_players) == 0:
+    await context.bot.send_message(group_id, "💥 All players are out! Innings over.")
+    match["state"] = "end_of_innings"
+    return
+
+else:
+    match["batting_user"] = remaining_players[0]
+
+async def check_follow_on(context: ContextTypes.DEFAULT_TYPE, match):
+    group_id = match["group_id"]
+
+    # Extract innings scores
+    innings = match.get("innings", [])
+    if len(innings) < 2:
+        return  # follow-on only possible after 2 innings
+
+    first_innings = innings[0]  # team_a or team_b
+    second_innings = innings[1]
+
+    first_team = first_innings["team"]
+    second_team = second_innings["team"]
+    first_score = first_innings["score"]
+    second_score = second_innings["score"]
+
+    if second_score >= 0.5 * first_score:
+        # No follow-on available
+        await context.bot.send_message(
+            group_id,
+            "🧮 No follow-on! Second team's score is above 50% of first team's."
+        )
+        return
+
+    # Prompt first innings team captain for decision
+    follow_captain = match[first_team]["captain"]
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Enforce Follow-On", callback_data="followon_yes")],
+        [InlineKeyboardButton("⏭️ Continue Normally", callback_data="followon_no")]
+    ])
+
+    await context.bot.send_message(
+        group_id,
+        f"⚖️ *Follow-On Decision!*\n"
+        f"{USERS[follow_captain]['name']} (Team {first_team.upper()}) —\n"
+        f"Second team scored only {second_score} vs your {first_score}.\n"
+        f"Do you want to enforce follow-on?",
+        reply_markup=keyboard,
+        parse_mode="Markdown"
+    )
+
+    match["state"] = "waiting_followon"
+    match["followon_team"] = second_team
+    match["followon_decider"] = follow_captain
+
+async def handle_followon_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user = update.effective_user
+    data = query.data
+    chat_id = update.effective_chat.id
+
+    match = TEAM_MATCHES.get(chat_id)
+    if not match or match.get("state") != "waiting_followon":
+        return
+
+    if user.id != match["followon_decider"]:
+        await query.answer("Only the deciding captain can choose.", show_alert=True)
+        return
+
+    if data == "followon_yes":
+        match["state"] = "in_play"
+        match["batting_team"] = match["followon_team"]
+        match["bowling_team"] = "team_b" if match["batting_team"] == "team_a" else "team_a"
+        await query.edit_message_text("✅ Follow-on enforced! Same team bats again immediately.")
+    else:
+        match["state"] = "in_play"
+        match["batting_team"] = "team_a" if match["followon_team"] == "team_b" else "team_b"
+        match["bowling_team"] = match["followon_team"]
+        await query.edit_message_text("⏭️ Follow-on skipped. Teams continue in normal order.")
+
+async def score(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.effective_chat
+    if chat.type not in ["group", "supergroup"]:
+        await update.message.reply_text("Use this in the group where the match is active.")
+        return
+
+    match = TEAM_MATCHES.get(chat.id)
+    if not match:
+        await update.message.reply_text("No active match found.")
+        return
+
+    text = "📊 *Match Scorecard*\n\n"
+
+    # Completed innings
+    innings = match.get("innings", [])
+    for idx, inn in enumerate(innings, 1):
+        team = "Team A" if inn["team"] == "team_a" else "Team B"
+        overs = inn.get("balls", 0) // 6
+        balls = inn.get("balls", 0) % 6
+        score = inn["score"]
+        wkts = inn.get("wickets", 0)
+        text += f"📝 Innings {idx}: *{team}* — {score}/{wkts} in {overs}.{balls} overs\n"
+
+    # Current innings
+    if match.get("state") == "in_play":
+        batting = match["batting_team"]
+        bowler = match["bowling_team"]
+        batter_name = USERS.get(match["batting_user"], {}).get("name", "Batter")
+        bowler_name = USERS.get(match["bowling_user"], {}).get("name", "Bowler")
+
+        score = match.get("score", 0)
+        wkts = match.get("wickets", 0)
+        balls = match.get("balls", 0)
+        overs = balls // 6
+        rem = balls % 6
+
+        text += f"\n🟢 *Current Innings:* Team {'A' if batting == 'team_a' else 'B'}\n"
+        text += f"🏏 Score: {score}/{wkts} in {overs}.{rem} overs\n"
+        text += f"🎯 Batter: {batter_name}\n"
+        text += f"🎳 Bowler: {bowler_name}\n"
+
+        if match.get("is_lms"):
+            text += "⚠️ *Last Man Standing is active!*\n"
+
+    await update.message.reply_text(text, parse_mode="Markdown")
+
     
 import logging
 from telegram.ext import (
@@ -1132,6 +1743,18 @@ def register_handlers(application):
     application.add_handler(CommandHandler("tourneycreate", tourney_create))
     application.add_handler(CommandHandler("join", tourney_join))
     application.add_handler(CommandHandler("schedule", tourney_schedule))
+    application.add_handler(MessageHandler(filters.TEXT & filters.PRIVATE, handle_run_input))
+    application.add_handler(MessageHandler(filters.TEXT & filters.PRIVATE, handle_variation_input))
+    application.add_handler(CommandHandler("cclteam", cclteam))
+    application.add_handler(CommandHandler("addplayer", addplayer))
+    application.add_handler(CommandHandler("removeplayer", removeplayer))
+    application.add_handler(CommandHandler("toss", start_team_toss))
+    application.add_handler(CommandHandler("rebat", rebat))
+    application.add_handler(CommandHandler("score", score))
+    application.add_handler(CallbackQueryHandler(handle_team_buttons, pattern="^(jointeam_|cancelteam_)"))
+    application.add_handler(CallbackQueryHandler(handle_team_toss_buttons, pattern="^teamtoss_"))
+    application.add_handler(CallbackQueryHandler(handle_team_choice_buttons, pattern="^teamchoice_"))
+    application.add_handler(CallbackQueryHandler(handle_followon_buttons, pattern="^followon_"))
 
 async def on_startup(app):
     await load_users()
