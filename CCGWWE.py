@@ -50,6 +50,7 @@ def ensure_user(user):
             "wins": 0,
             "losses": 0,
             "ties": 0,
+            "xp": 0,
             "registered": False,
             "last_daily": None,
         }
@@ -78,6 +79,22 @@ async def load_users():
     except Exception as e:
         logger.error(f"Error loading users: {e}", exc_info=True)
 
+def get_level_info(xp):
+    levels = [
+        (0, "Beginner", "🍼"),
+        (300, "Street Player", "🩴"),
+        (750, "Hard Hitter", "💥"),
+        (1300, "Play Maker", "🎯"),
+        (2000, "Game Changer", "🔥"),
+        (3000, "Clutch God", "🧨"),
+        (4500, "Legend", "👑"),
+    ]
+
+    for i in reversed(range(len(levels))):
+        if xp >= levels[i][0]:
+            return i + 1, levels[i][1], levels[i][2]
+    return 1, "Beginner", "🍼"
+
 # --- Commands ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -98,21 +115,33 @@ async def register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await save_user(user.id)
     await update.message.reply_text("Registered! 4000🪙 added to your account.")
 
+
 async def profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ensure_user(user)
     user_data = USERS[user.id]
+    achievements = user_data.get("achievements", [])
+    achievement_text = "\n".join([f"🏅 {a}" for a in achievements]) if achievements else "None"
+
+    # XP & Level
+    xp = user_data.get("xp", 0)
+    level, title, emoji = get_level_info(xp)
+    next_level_xp = [300, 750, 1300, 2000, 3000, 4500, None][level - 1]
+    if next_level_xp:
+        progress = f"{xp} / {next_level_xp}"
+    else:
+        progress = f"{xp} / MAX"
+
     profile_text = (
-        f"{user_data['name']}'s Profile\n\n"
-        f"Name: {user_data['name']}\n"
-        f"ID: {user.id}\n"
-        f"Purse: {user_data.get('coins', 0)}🪙\n\n"
-        f"Performance History:\n"
-        f"Wins: {user_data.get('wins', 0)}\n"
-        f"Losses: {user_data.get('losses', 0)}\n"
-        f"Ties: {user_data.get('ties', 0)}"
+        f"👤 *{user_data['name']}'s Profile*\n\n"
+        f"🆔 ID: `{user.id}`\n"
+        f"🪙 Coins: `{user_data.get('coins', 0)}`\n"
+        f"🎮 Wins: `{user_data.get('wins', 0)}` | Losses: `{user_data.get('losses', 0)}` | Ties: `{user_data.get('ties', 0)}`\n\n"
+        f"📈 XP: `{progress}`\n"
+        f"🎖 Level {level}: *{title}* {emoji}\n\n"
+        f"🏅 *Achievements:*\n{achievement_text}"
     )
-    await update.message.reply_text(profile_text)
+    await update.message.reply_text(profile_text, parse_mode="Markdown")
 
 async def send(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -777,6 +806,8 @@ async def finish_match(context: ContextTypes.DEFAULT_TYPE, match, winner):
 
     USERS[winner]["wins"] += 1
     USERS[loser]["losses"] += 1
+    USERS[winner]["xp"] = USERS[winner].get("xp", 0) + 15  # 10 for playing + 5 for win
+    USERS[loser]["xp"] = USERS[loser].get("xp", 0) + 10     # just for playing
 
     if bet_amount > 0:
         USERS[winner]["coins"] += bet_amount
